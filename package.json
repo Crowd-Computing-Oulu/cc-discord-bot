@@ -1,0 +1,46 @@
+{
+  "name": "sissy",
+  "version": "24.6.17",
+  "description": "CC Chatbot",
+  "main": "src/Core.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/bot.js"
+  },
+  "dependencies": {
+    "@conga/annotations": "^1.0.3",
+    "annotations": "^1.1.2",
+    "aws-sdk": "^2.663.0",
+    "conga-annotations": "^1.0.0",
+    "discord.js": "^14.0.0",
+    "dotenv": "^8.2.0",
+    "express": "^4.16.4",
+    "nosql": "^6.1.0",
+    "package.json": "^0.0.0",
+    "StringScanner": "0.0.3",
+    "tmi.js": "^1.5.0",
+    "xmlhttprequest": "^1.8.0",
+    "sequelize": "6.37.3",
+    "cron-schedule-parser": "2.0.12",
+    "sqlite3": "5.1.7",
+    "moment-timezone": "0.5.45",
+    "node-schedule": "2.1.1",
+    "openai":"4.51.0"
+  },
+  "engines": {
+    "node": "8.x"
+  },
+  "repository": {
+    "url": ""
+  },
+  "license": "MIT",
+  "keywords": [
+    "cc",
+    "crowdcomputing",
+    "oulu",
+    "discord",
+    "bitbot",
+    "chatbot",
+    "irc"
+  ]
+}

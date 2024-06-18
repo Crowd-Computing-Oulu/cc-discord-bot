@@ -1,0 +1,7 @@
+./node_modules
+./lib
+node_modules
+lib
+CLIENT_ID
+TOKEN
+config.json
