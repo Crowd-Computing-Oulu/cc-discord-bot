@@ -930,15 +930,22 @@ async function toolMemoryDelete({ key }) {
 // ─── Image generation ─────────────────────────────────────────────────────────
 
 async function toolGenerateImage({ prompt, channel_id }, discordClient) {
-  const res = await axios.post(
-    'https://openrouter.ai/api/v1/chat/completions',
-    {
-      model: 'google/gemini-2.5-flash-preview-05-20',
-      modalities: ['image', 'text'],
-      messages: [{ role: 'user', content: prompt }],
-    },
-    { headers: _OR_HEADERS, timeout: 120000 }
-  );
+  let res;
+  try {
+    res = await axios.post(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        model: 'sourceful/riverflow-v2.5-pro',
+        modalities: ['image', 'text'],
+        messages: [{ role: 'user', content: prompt }],
+      },
+      { headers: _OR_HEADERS, timeout: 120000 }
+    );
+  } catch (e) {
+    const detail = e.response?.data ? JSON.stringify(e.response.data).slice(0, 400) : e.message;
+    console.error('[generate_image] API error:', e.response?.status, detail);
+    return { error: `Image generation failed (${e.response?.status ?? 'network'}): ${detail}` };
+  }
 
   const msg = res.data.choices[0].message;
   let imageData = null;
