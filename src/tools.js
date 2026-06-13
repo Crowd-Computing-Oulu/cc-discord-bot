@@ -190,6 +190,20 @@ export const toolDefinitions = [
   {
     type: 'function',
     function: {
+      name: 'lookup_user',
+      description: 'Find a Discord server member by name (display name, nickname, or username). Returns their user ID so you can use it with send_dm. Use this when you know someone\'s name but not their ID.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'The name to search for (partial match is fine)' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'send_dm',
       description: 'Send a direct message to a Discord user.',
       parameters: {
@@ -536,6 +550,7 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'fetch_url': return await toolFetchUrl(args);
     case 'read_file': return await toolReadFile(args);
     case 'delay_task': return await toolDelayTask(args);
+    case 'lookup_user': return await toolLookupUser(args, discordClient);
     case 'send_dm': return await toolSendDm(args, discordClient);
     case 'read_channel': return await toolReadChannel(args, discordClient);
     case 'list_channels': return await toolListChannels(args, discordClient);
@@ -681,6 +696,23 @@ async function toolDelayTask({ prompt, iso_datetime, channel_id, user_id }) {
 }
 
 // ─── Discord action tools ─────────────────────────────────────────────────────
+
+async function toolLookupUser({ name }, discordClient) {
+  const query = name.toLowerCase();
+  const results = [];
+  for (const guild of discordClient.guilds.cache.values()) {
+    const members = await guild.members.fetch();
+    for (const member of members.values()) {
+      const displayName = (member.displayName || '').toLowerCase();
+      const username = (member.user.username || '').toLowerCase();
+      if (displayName.includes(query) || username.includes(query)) {
+        results.push({ id: member.user.id, username: member.user.username, displayName: member.displayName });
+      }
+    }
+  }
+  if (results.length === 0) return { error: `No member found matching "${name}"` };
+  return { matches: results };
+}
 
 async function toolSendDm({ user_id, message }, discordClient) {
   const user = await discordClient.users.fetch(user_id);
