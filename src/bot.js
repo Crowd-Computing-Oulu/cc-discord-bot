@@ -2,7 +2,7 @@ import { Client, GatewayIntentBits, Events, SlashCommandBuilder, Partials, Chann
 import moment from 'moment-timezone';
 import { REST, Routes } from 'discord.js';
 import db from './database.js';
-import { respondTo, respondToDM, shouldRespondWithGranite } from './ai.js';
+import { respondTo, respondToDM, shouldRespondWithGranite, scheduleNightlyCompaction } from './ai.js';
 
 const { Reminder, RepeatReminder, ScheduledTask, initialize, Op } = db;
 
@@ -47,6 +47,7 @@ const CONVERSATIONAL_DEPTH = 4;
 
 // ─── Discord client ───────────────────────────────────────────────────────────
 await initialize();
+scheduleNightlyCompaction();
 console.log('Starting Sissy Bot (OpenRouter / Qwen3)');
 
 const client = new Client({
@@ -278,6 +279,12 @@ client.on('messageCreate', async message => {
   const directMention = message.mentions.users.has(CLIENT_ID) ||
     message.cleanContent.toLowerCase().includes('@sissy');
 
+  const isReplyToBot = message.reference?.messageId
+    ? await message.channel.messages.fetch(message.reference.messageId)
+        .then(ref => ref.author.id === client.user.id)
+        .catch(() => false)
+    : false;
+
   // ── Paper link auto-detection (runs independently of mention/heuristic) ──
   const paperIdentifier = extractPaperIdentifier(message.cleanContent);
   if (paperIdentifier && !directMention) {
@@ -309,7 +316,7 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  if (!directMention) {
+  if (!directMention && !isReplyToBot) {
     let recentMsgs = [];
     try {
       const recent = await message.channel.messages.fetch({ limit: CONVERSATIONAL_DEPTH + 1 });

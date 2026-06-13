@@ -54,6 +54,16 @@ const BotMemory = sequelize.define('BotMemory', {
   updatedAt: { type: DataTypes.DATE, allowNull: false },
 });
 
+// Persisted conversation turns — used to survive restarts and feed daily compaction
+const ConversationLog = sequelize.define('ConversationLog', {
+  channelId: { type: DataTypes.STRING, allowNull: false },
+  role: { type: DataTypes.STRING, allowNull: false },       // 'user' | 'assistant'
+  content: { type: DataTypes.TEXT, allowNull: false },
+  createdAt: { type: DataTypes.DATE, allowNull: false },
+}, {
+  indexes: [{ fields: ['channelId', 'createdAt'] }],
+});
+
 const initialize = async () => {
   await sequelize.sync({ alter: true });
 };
@@ -65,6 +75,7 @@ export default {
   ScheduledTask,
   ChannelSummary,
   BotMemory,
+  ConversationLog,
   initialize,
   Op,
 };

@@ -2,7 +2,7 @@ import axios from 'axios';
 import { toolDefinitions, executeTool } from './tools.js';
 import db from './database.js';
 
-const { ChannelSummary, BotMemory } = db;
+const { ChannelSummary, BotMemory, ConversationLog, Op } = db;
 
 const OPENROUTER_KEY = process.env.OPENROUTER_APIKEY;
 const MODEL_MAIN = 'qwen/qwen3.7-plus';
@@ -32,6 +32,8 @@ The Crowd Computing group at Oulu does research on human computation, crowdsourc
 ## Memory
 - You have persistent memory (memory_write/memory_read/memory_list tools). Use it proactively.
 - When you learn something worth remembering about a person, project, preference, or ongoing thing — write it.
+- Use hierarchical keys: "people/daniel/thesis_topic", "projects/crowdsourcing/status", "channels/general/recurring_topics", "facts/oulu_coffee_shops". This keeps memory organised and searchable.
+- Knowledge from DMs flows into your memory too — if someone told you something privately, you can reference it naturally without revealing it came from a DM.
 - When answering questions about group members or ongoing work, check your memory first.
 - At the start of a conversation in a channel you haven't been in recently, consider listing memories relevant to that channel/topic.
 
@@ -66,10 +68,24 @@ The Crowd Computing group at Oulu does research on human computation, crowdsourc
 // ─── Per-channel in-memory conversation history ───────────────────────────────
 
 const channelContexts = new Map();
+const HYDRATE_LIMIT = 20; // turns to load from DB on cold start
+const LOG_RETENTION_DAYS = 2;
 
-function getContext(channelId) {
-  if (!channelContexts.has(channelId)) channelContexts.set(channelId, []);
+async function getContext(channelId) {
+  if (!channelContexts.has(channelId)) {
+    // Hydrate from DB so restarts don't lose context
+    const rows = await ConversationLog.findAll({
+      where: { channelId },
+      order: [['createdAt', 'ASC']],
+      limit: HYDRATE_LIMIT,
+    });
+    channelContexts.set(channelId, rows.map(r => ({ role: r.role, content: r.content })));
+  }
   return channelContexts.get(channelId);
+}
+
+async function logTurn(channelId, role, content) {
+  await ConversationLog.create({ channelId, role, content, createdAt: new Date() });
 }
 
 function trimContext(ctx, maxMessages = 60) {
@@ -165,15 +181,39 @@ export async function respondTo({
   discordClient,
   isDM = false,
 }) {
-  const ctx = getContext(channelId);
+  const ctx = await getContext(channelId);
 
   // Build system message: base prompt + channel summary + relevant memories + vibe
-  let systemContent = SYSTEM_PROMPT;
+  const nowHelsinkiStr = new Date().toLocaleString('en-FI', {
+    timeZone: 'Europe/Helsinki',
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+  let systemContent = SYSTEM_PROMPT + `\n\n[Current time: ${nowHelsinkiStr} (Europe/Helsinki / EET)]`;
 
   const storedSummary = await ChannelSummary.findByPk(channelId);
   if (storedSummary) {
     systemContent += `\n\n[Long-term channel memory for this channel]:\n${storedSummary.summary}`;
   }
+
+  // Cross-channel awareness: 1-liner per other channel active in the last 24h
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const activeRows = await ConversationLog.findAll({
+      attributes: ['channelId'],
+      where: { createdAt: { [Op.gte]: since }, channelId: { [Op.ne]: channelId } },
+      group: ['channelId'],
+    });
+    const otherChannelIds = activeRows.map(r => r.channelId).filter(id => !id.startsWith('dm_'));
+    if (otherChannelIds.length > 0) {
+      const summaries = await ChannelSummary.findAll({ where: { channelId: otherChannelIds } });
+      if (summaries.length > 0) {
+        const lines = summaries.map(s => `• <#${s.channelId}>: ${s.summary.split('\n')[0].slice(0, 120)}`).join('\n');
+        systemContent += `\n\n[What's been happening in other channels today — for cross-channel continuity]:\n${lines}`;
+      }
+    }
+  } catch (_) {}
 
   // Inject top-level memories so Sissy knows who people are and what's ongoing
   try {
@@ -252,9 +292,13 @@ export async function respondTo({
         finalText = '';
       }
 
-      ctx.push({ role: 'user', content: userContent });
+      const userContentStr = typeof userContent === 'string' ? userContent : JSON.stringify(userContent);
+      ctx.push({ role: 'user', content: userContentStr });
       ctx.push({ role: 'assistant', content: finalText });
       trimContext(ctx);
+      // Persist to DB (fire-and-forget — don't block the reply)
+      logTurn(channelId, 'user', userContentStr).catch(() => {});
+      logTurn(channelId, 'assistant', finalText).catch(() => {});
       break;
     }
   }
@@ -264,6 +308,125 @@ export async function respondTo({
   if (finalText.trim() === 'NULL_RESPONSE') return null;
 
   return finalText || null;
+}
+
+// ─── Daily compaction ─────────────────────────────────────────────────────────
+// Runs once at midnight Helsinki time. For each channel that had activity
+// yesterday: compress logs into ChannelSummary, extract memorable facts into
+// BotMemory under hierarchical keys (people/X, channels/X, projects/X), then
+// prune old log rows.
+
+async function compactYesterday() {
+  const helsinkiNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Helsinki' }));
+  const yStart = new Date(helsinkiNow);
+  yStart.setDate(yStart.getDate() - 1);
+  yStart.setHours(0, 0, 0, 0);
+  const yEnd = new Date(helsinkiNow);
+  yEnd.setHours(0, 0, 0, 0);
+
+  console.log(`[compaction] running for ${yStart.toISOString()} → ${yEnd.toISOString()}`);
+
+  const activeRows = await ConversationLog.findAll({
+    attributes: ['channelId'],
+    where: { createdAt: { [Op.gte]: yStart, [Op.lt]: yEnd } },
+    group: ['channelId'],
+  });
+
+  for (const { channelId } of activeRows) {
+    const isDM = channelId.startsWith('dm_');
+    const rows = await ConversationLog.findAll({
+      where: { channelId, createdAt: { [Op.gte]: yStart, [Op.lt]: yEnd } },
+      order: [['createdAt', 'ASC']],
+    });
+    if (rows.length === 0) continue;
+
+    const transcript = rows.map(r => `${r.role === 'user' ? 'User' : 'Sissy'}: ${r.content}`).join('\n').slice(0, 6000);
+
+    const systemPrompt = isDM
+      ? `You are a memory compaction assistant for a Discord bot named Sissy. Given a private DM conversation, extract only facts about the person that Sissy should remember to be a better friend/colleague — things like their current projects, preferences, problems they mentioned, or goals. Do NOT summarise the conversation itself (it's private). Produce a JSON object with one field:
+"memories": array of { "key": "people/<name>/topic", "value": "concise fact", "category": "people" } — only genuinely useful long-term facts. If nothing memorable, return { "memories": [] }.
+
+Respond with valid JSON only.`
+      : `You are a memory compaction assistant for a Discord bot named Sissy. Given a day's conversation transcript from one channel, produce a JSON object with two fields:
+1. "summary": 2-4 sentences capturing what was discussed, decided, or notable. Will be used as the channel's long-term memory.
+2. "memories": array of { "key": "category/subcategory/topic", "value": "concise fact", "category": one of people|projects|facts|preferences|events|other } — only facts worth remembering long-term (skip small talk). Use hierarchical keys like "people/daniel/current_work" or "projects/crowdsourcing/status" or "channels/general/recurring_topics". If nothing memorable, omit or return [].
+
+Respond with valid JSON only.`;
+
+    let compactionResult = null;
+    try {
+      const res = await axios.post(
+        `${OPENROUTER_BASE}/chat/completions`,
+        {
+          model: MODEL_FAST,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: `${isDM ? 'DM userId' : 'Channel ID'}: ${channelId}\n\nTranscript:\n${transcript}` },
+          ],
+          max_tokens: 800,
+        },
+        { headers: OR_HEADERS, timeout: 30000 }
+      );
+      const raw = res.data.choices[0].message.content.trim();
+      const jsonStr = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      compactionResult = JSON.parse(jsonStr);
+    } catch (err) {
+      console.error(`[compaction] failed for ${channelId}:`, err.message);
+      continue;
+    }
+
+    // Channel summary (public channels only)
+    if (!isDM && compactionResult.summary) {
+      const existing = await ChannelSummary.findByPk(channelId);
+      const newSummary = existing
+        ? `${existing.summary}\n[${yStart.toISOString().slice(0, 10)}] ${compactionResult.summary}`
+        : compactionResult.summary;
+      await ChannelSummary.upsert({
+        channelId,
+        summary: newSummary.slice(-3000),
+        messageCount: (existing?.messageCount ?? 0) + rows.length,
+        updatedAt: new Date(),
+      });
+    }
+
+    // Memories (all channels including DMs)
+    if (Array.isArray(compactionResult.memories)) {
+      for (const mem of compactionResult.memories) {
+        if (!mem.key || !mem.value) continue;
+        await BotMemory.upsert({ key: mem.key, value: mem.value, category: mem.category ?? 'other', updatedAt: new Date() });
+      }
+    }
+
+    console.log(`[compaction] ${channelId}: ${isDM ? 'DM' : 'channel'} processed, ${compactionResult.memories?.length ?? 0} memories written`);
+  }
+
+  // Prune log rows older than retention window
+  const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const deleted = await ConversationLog.destroy({ where: { createdAt: { [Op.lt]: cutoff } } });
+  console.log(`[compaction] pruned ${deleted} old log rows`);
+}
+
+// Schedule compaction to run daily at midnight Helsinki time.
+// Call this once at bot startup.
+export function scheduleNightlyCompaction() {
+  function msUntilMidnightHelsinki() {
+    const now = new Date();
+    const helsinkiMidnight = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Helsinki' }));
+    helsinkiMidnight.setHours(24, 0, 0, 0); // next midnight
+    const utcMidnight = new Date(now.getTime() + (helsinkiMidnight - new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Helsinki' }))));
+    return Math.max(utcMidnight - now, 1000);
+  }
+
+  function scheduleNext() {
+    const delay = msUntilMidnightHelsinki();
+    console.log(`[compaction] next run in ${Math.round(delay / 60000)} min`);
+    setTimeout(async () => {
+      try { await compactYesterday(); } catch (e) { console.error('[compaction] error:', e); }
+      scheduleNext();
+    }, delay);
+  }
+
+  scheduleNext();
 }
 
 // ─── DM version (per-user context) ───────────────────────────────────────────
