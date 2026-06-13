@@ -1,6 +1,6 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { PDFParse } from 'pdf-parse';
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import mammoth from 'mammoth';
 import { parse as csvParse } from 'csv-parse/sync';
 import moment from 'moment-timezone';
@@ -444,13 +444,11 @@ async function toolFetchUrl({ url }) {
 async function toolReadFile({ url, filename }) {
   const ext = filename.split('.').pop().toLowerCase();
 
+  const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
   if (ext === 'pdf') {
-    const parser = new PDFParse({ url });
-    const data = await parser.getText();
+    const data = await pdfParse(Buffer.from(res.data));
     return { filename, content: data.text.slice(0, 12000) };
   }
-
-  const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
   const buffer = Buffer.from(res.data);
   if (ext === 'docx') {
     const result = await mammoth.extractRawText({ buffer });
