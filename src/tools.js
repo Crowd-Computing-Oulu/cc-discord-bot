@@ -1122,8 +1122,7 @@ async function toolGenerateImage({ prompt, channel_id, user_id }, discordClient)
     res = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
-        model: 'sourceful/riverflow-v2.5-pro',
-        modalities: ['image', 'text'],
+        model: 'google/gemini-2.5-flash-image',
         messages: [{ role: 'user', content: prompt }],
       },
       { headers: _OR_HEADERS, timeout: 120000 }
