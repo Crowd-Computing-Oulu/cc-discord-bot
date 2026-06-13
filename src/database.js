@@ -46,6 +46,14 @@ const ChannelSummary = sequelize.define('ChannelSummary', {
   updatedAt: { type: DataTypes.DATE, allowNull: false },
 });
 
+// Persistent key-value memory the bot can read and write autonomously
+const BotMemory = sequelize.define('BotMemory', {
+  key: { type: DataTypes.STRING, primaryKey: true, allowNull: false },
+  value: { type: DataTypes.TEXT, allowNull: false },
+  category: { type: DataTypes.STRING, allowNull: true },  // e.g. "people", "projects", "facts", "preferences"
+  updatedAt: { type: DataTypes.DATE, allowNull: false },
+});
+
 const initialize = async () => {
   await sequelize.sync({ alter: true });
 };
@@ -56,6 +64,7 @@ export default {
   RepeatReminder,
   ScheduledTask,
   ChannelSummary,
+  BotMemory,
   initialize,
   Op,
 };

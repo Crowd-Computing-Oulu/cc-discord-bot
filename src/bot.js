@@ -145,6 +145,34 @@ async function fetchPastMessages(channel, limit = 20) {
 
 // ─── Background task runner ───────────────────────────────────────────────────
 
+// Try DM first; fall back to a channel mention if DM fails or is unavailable
+async function deliverReminder(client, userId, title, pingUserId, channelId, label = '🔔 Reminder') {
+  const mention = pingUserId ? ` <@${pingUserId}>` : `<@${userId}>`;
+  const dmText = `${label}: **${title}**${pingUserId ? ` (ping: <@${pingUserId}>)` : ''}`;
+  const channelText = `${label}: ${mention} **${title}**`;
+
+  let dmSent = false;
+  try {
+    const user = await client.users.fetch(userId);
+    await user.send(dmText);
+    dmSent = true;
+  } catch (_) {}
+
+  if (channelId) {
+    try {
+      const ch = await client.channels.fetch(channelId);
+      if (ch?.isTextBased()) {
+        await ch.send(channelText);
+        return;
+      }
+    } catch (_) {}
+  }
+
+  if (!dmSent) {
+    console.error(`Could not deliver reminder "${title}" to user ${userId} — no DM and no channel`);
+  }
+}
+
 setInterval(async () => {
   const now = new Date();
 
@@ -152,23 +180,19 @@ setInterval(async () => {
   const dueReminders = await Reminder.findAll({ where: { remindAt: { [Op.lte]: now } } });
   for (const r of dueReminders) {
     try {
-      const user = await client.users.fetch(r.userId);
-      let msg = `🔔 **Reminder**: ${r.title}`;
-      if (r.pingUserId) msg += ` <@${r.pingUserId}>`;
-      await user.send(msg);
+      await deliverReminder(client, r.userId, r.title, r.pingUserId, r.channelId, '🔔 Reminder');
       await r.destroy();
-    } catch (e) { console.error('Reminder delivery failed:', e.message); }
+    } catch (e) {
+      console.error('Reminder delivery failed:', e.message);
+      await r.destroy();
+    }
   }
 
   // Repeating reminders
   const dueRepeat = await RepeatReminder.findAll({ where: { nextRunAt: { [Op.lte]: now } } });
   for (const r of dueRepeat) {
     try {
-      const user = await client.users.fetch(r.userId);
-      let msg = `🔔 **Repeating Reminder**: ${r.title}`;
-      if (r.pingUserId) msg += ` <@${r.pingUserId}>`;
-      await user.send(msg);
-      // Compute next run
+      await deliverReminder(client, r.userId, r.title, r.pingUserId, r.channelId, '🔔 Repeating Reminder');
       const next = computeNextRun(r.cronExpr, now);
       await r.update({ lastSentAt: now, nextRunAt: next });
     } catch (e) { console.error('Repeating reminder delivery failed:', e.message); }
@@ -227,15 +251,21 @@ client.on('messageCreate', async message => {
     if (!DM_WHITELIST.includes(message.author.username)) return;
     try {
       await message.channel.sendTyping();
+      const typingInterval = setInterval(() => message.channel.sendTyping().catch(() => {}), 8000);
       const { imageUrls, files } = parseAttachments(message);
-      const response = await respondToDM({
-        userId: message.author.id,
-        input: message.cleanContent,
-        imageUrls,
-        attachments: files,
-        discordClient: client,
-      });
-      if (!response) return; // AI chose not to respond
+      let response;
+      try {
+        response = await respondToDM({
+          userId: message.author.id,
+          input: message.cleanContent,
+          imageUrls,
+          attachments: files,
+          discordClient: client,
+        });
+      } finally {
+        clearInterval(typingInterval);
+      }
+      if (!response) return;
       const chunks = splitMessage(response);
       for (const chunk of chunks) await message.author.send(chunk);
     } catch (e) {
@@ -253,15 +283,21 @@ client.on('messageCreate', async message => {
   if (paperIdentifier && !directMention) {
     try {
       await message.channel.sendTyping();
+      const typingInterval = setInterval(() => message.channel.sendTyping().catch(() => {}), 8000);
       const { pastMessages } = await fetchPastMessages(message.channel, 10);
       const history = pastMessages.slice(0, -1);
-      const response = await respondTo({
-        channelId: message.channelId,
-        userId: message.author.id,
-        input: `A paper was just shared in the conversation: "${paperIdentifier}". Use the lookup_paper tool to fetch its metadata, then reply with: the title, authors, where/when it was published, a 2-3 sentence summary of what it's about, and a sentence on how it might be relevant to what we've been discussing. Be concise and natural — don't list headings, just flow it as a short paragraph.`,
-        pastMessages: history,
-        discordClient: client,
-      });
+      let response;
+      try {
+        response = await respondTo({
+          channelId: message.channelId,
+          userId: message.author.id,
+          input: `A paper was just shared in the conversation: "${paperIdentifier}". Use the lookup_paper tool to fetch its metadata, then reply with: the title, authors, where/when it was published, a 2-3 sentence summary of what it's about, and a sentence on how it might be relevant to what we've been discussing. Be concise and natural — don't list headings, just flow it as a short paragraph.`,
+          pastMessages: history,
+          discordClient: client,
+        });
+      } finally {
+        clearInterval(typingInterval);
+      }
       if (response) {
         const chunks = splitMessage(response);
         await message.reply(chunks[0]);
@@ -290,25 +326,29 @@ client.on('messageCreate', async message => {
 
   try {
     await message.channel.sendTyping();
-    const histLimit = directMention ? 30 : 15;
-    const { pastMessages } = await fetchPastMessages(message.channel, histLimit);
+    const typingInterval = setInterval(() => message.channel.sendTyping().catch(() => {}), 8000);
 
-    // Remove the triggering message from history (it's passed as `input`)
-    const history = pastMessages.slice(0, -1);
+    let response;
+    try {
+      const histLimit = directMention ? 30 : 15;
+      const { pastMessages } = await fetchPastMessages(message.channel, histLimit);
+      const history = pastMessages.slice(0, -1);
+      const { imageUrls, files } = parseAttachments(message);
 
-    const { imageUrls, files } = parseAttachments(message);
+      response = await respondTo({
+        channelId: message.channelId,
+        userId: message.author.id,
+        input: message.cleanContent,
+        pastMessages: history,
+        imageUrls,
+        attachments: files,
+        discordClient: client,
+      });
+    } finally {
+      clearInterval(typingInterval);
+    }
 
-    const response = await respondTo({
-      channelId: message.channelId,
-      userId: message.author.id,
-      input: message.cleanContent,
-      pastMessages: history,
-      imageUrls,
-      attachments: files,
-      discordClient: client,
-    });
-
-    if (!response) return; // AI decided not to respond this turn
+    if (!response) return;
 
     const chunks = splitMessage(response);
     await message.reply(chunks[0]);
@@ -365,8 +405,8 @@ client.on('interactionCreate', async interaction => {
     if (remindAt <= new Date()) {
       remindAt = moment.tz({ month: month - 1, day, hour, minute }, 'Europe/Helsinki').add(1, 'years').toDate();
     }
-    await Reminder.create({ userId: user.id, title: name, remindAt });
-    await interaction.reply(`🔔 Reminder set for **@${user.displayName}**: **"${name}"** at **${remindAt.toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })}**`);
+    await Reminder.create({ userId: user.id, title: name, remindAt, channelId: interaction.channelId });
+    await interaction.reply(`🔔 Reminder set for **${user.displayName}**: **"${name}"** at **${remindAt.toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })}**`);
     return;
   }
 
@@ -377,9 +417,20 @@ client.on('interactionCreate', async interaction => {
     const hours = interaction.options.getInteger('hours') ?? 0;
     const minutes = interaction.options.getInteger('minutes') ?? 0;
     const seconds = interaction.options.getInteger('seconds') ?? 0;
-    const remindAt = moment().add(days, 'days').add(hours, 'hours').add(minutes, 'minutes').add(seconds, 'seconds').toDate();
-    await Reminder.create({ userId: user.id, title: name, remindAt });
-    await interaction.reply(`⏰ Timer set for **@${user.displayName}**: **"${name}"** at **${remindAt.toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })}**`);
+    const totalMs = ((days * 24 + hours) * 60 + minutes) * 60 + seconds;
+    if (totalMs <= 0) {
+      await interaction.reply('Set at least one duration value (days/hours/minutes/seconds).');
+      return;
+    }
+    const remindAt = new Date(Date.now() + totalMs * 1000);
+    await Reminder.create({ userId: user.id, title: name, remindAt, channelId: interaction.channelId });
+    const humanDuration = [
+      days > 0 ? `${days}d` : '',
+      hours > 0 ? `${hours}h` : '',
+      minutes > 0 ? `${minutes}m` : '',
+      seconds > 0 ? `${seconds}s` : '',
+    ].filter(Boolean).join(' ');
+    await interaction.reply(`⏰ Timer set for **${user.displayName}**: **"${name}"** — fires in **${humanDuration}** (${remindAt.toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })})`  );
     return;
   }
 
