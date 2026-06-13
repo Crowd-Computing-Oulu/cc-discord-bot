@@ -914,7 +914,7 @@ async function toolReadChannel({ channel_id, limit = 30 }, discordClient) {
     author: m.author.username,
     content: m.cleanContent,
     timestamp: m.createdAt.toISOString(),
-    attachments: m.attachments.size > 0 ? [...m.attachments.values()].map(a => a.name) : undefined,
+    attachments: m.attachments.size > 0 ? [...m.attachments.values()].map(a => ({ name: a.name, url: a.url })) : undefined,
   }));
   return { channel: channel.name, messages: msgs };
 }
@@ -940,13 +940,16 @@ async function toolSearchMessages({ query, channel_id, limit_per_channel = 100 }
     try {
       const messages = await channel.messages.fetch({ limit });
       for (const m of messages.values()) {
-        if (m.cleanContent.toLowerCase().includes(q)) {
+        const matchesText = m.cleanContent.toLowerCase().includes(q);
+        const hasAttachment = m.attachments.size > 0 && [...m.attachments.values()].some(a => a.name?.toLowerCase().includes(q));
+        if (matchesText || hasAttachment) {
           found.push({
             channel: channel.name,
             channel_id: channel.id,
             author: m.author.username,
             content: m.cleanContent,
             timestamp: m.createdAt.toISOString(),
+            attachments: m.attachments.size > 0 ? [...m.attachments.values()].map(a => ({ name: a.name, url: a.url })) : undefined,
           });
         }
       }
