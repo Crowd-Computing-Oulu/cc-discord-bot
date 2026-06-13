@@ -192,7 +192,8 @@ export async function respondTo({
     hour12: false,
   });
   let systemContent = SYSTEM_PROMPT + `\n\n[Current time: ${nowHelsinkiStr} (Europe/Helsinki / EET)]` +
-    (userId ? `\n\n[The person you are responding to has Discord user ID: ${userId}. Use this directly with send_dm — do NOT ask them for their user ID.]` : '');
+    (userId ? `\n\n[The person you are responding to has Discord user ID: ${userId}. Use this directly with send_dm — do NOT ask them for their user ID.]` : '') +
+    (!isDM ? `\n\n[The current channel ID is: ${channelId}. Use this directly with tools like generate_image, read_channel, create_poll, etc. — do NOT ask for the channel ID.]` : '');
 
   const storedSummary = await ChannelSummary.findByPk(channelId);
   if (storedSummary) {
