@@ -621,7 +621,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'python_run',
-      description: 'Write a Python script to the user\'s file storage and execute it. Returns stdout and stderr. The script runs in a 30-second timeout sandbox. You can import standard library modules freely. For data science: numpy, pandas, matplotlib are available if installed on the host.',
+      description: 'Write a Python script to the user\'s file storage and execute it. Returns stdout and stderr. The script runs in a 30-second timeout sandbox. matplotlib, pandas, numpy, scipy, seaborn, scikit-learn, Pillow, requests, and more are pre-installed. If a package is missing, use pip_install first. matplotlib runs headless (Agg backend) — use plt.savefig() to save plots, never plt.show(). The working directory is the user\'s own file storage so relative paths work.',
       parameters: {
         type: 'object',
         properties: {
@@ -630,6 +630,26 @@ export const toolDefinitions = [
           user_id: { type: 'string' },
         },
         required: ['code', 'user_id'],
+      },
+    },
+  },
+
+  // ── pip install ──
+  {
+    type: 'function',
+    function: {
+      name: 'pip_install',
+      description: 'Install one or more Python packages at runtime using pip. Use this when a python_run script fails with a ModuleNotFoundError. Packages persist for the lifetime of the container.',
+      parameters: {
+        type: 'object',
+        properties: {
+          packages: {
+            type: 'array',
+            description: 'List of package names to install, e.g. ["networkx", "wordcloud"]',
+            items: { type: 'string' },
+          },
+        },
+        required: ['packages'],
       },
     },
   },
@@ -756,6 +776,7 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'fs_upload': return await toolFsUpload({ ...args, user_id: args.user_id || requestingUserId }, discordClient);
     case 'python_run': return await toolPythonRun({ ...args, user_id: args.user_id || requestingUserId });
     case 'read_images': return await toolReadImages(args);
+    case 'pip_install': return await toolPipInstall(args);
     default: return { error: `Unknown tool: ${name}` };
   }
 }
@@ -1532,10 +1553,16 @@ async function toolPythonRun({ code, file_name = 'script.py', user_id }) {
     fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
     fs.writeFileSync(scriptPath, code, 'utf8');
 
+    const userDir = getUserDir(user_id);
     const result = await execFileAsync('python3', [scriptPath], {
       timeout: 30000,
       maxBuffer: 1024 * 512,
-      cwd: getUserDir(user_id),
+      cwd: userDir,
+      env: {
+        ...process.env,
+        MPLBACKEND: 'Agg',
+        MPLCONFIGDIR: userDir,
+      },
     }).catch(err => ({
       stdout: err.stdout || '',
       stderr: err.stderr || err.message,
@@ -1547,6 +1574,29 @@ async function toolPythonRun({ code, file_name = 'script.py', user_id }) {
     const exitCode = result.exitCode ?? 0;
 
     return { success: exitCode === 0, file_name, exit_code: exitCode, stdout, stderr };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+// ─── pip install ─────────────────────────────────────────────────────────────
+
+async function toolPipInstall({ packages }) {
+  if (!packages || packages.length === 0) return { error: 'No packages specified' };
+  const safe = packages.map(p => p.replace(/[^a-zA-Z0-9._\-\[\]]/g, ''));
+  try {
+    const result = await execFileAsync('pip3', ['install', '--break-system-packages', ...safe], {
+      timeout: 120000,
+      maxBuffer: 1024 * 512,
+    }).catch(err => ({
+      stdout: err.stdout || '',
+      stderr: err.stderr || err.message,
+      exitCode: err.code ?? 1,
+    }));
+    const exitCode = result.exitCode ?? 0;
+    const stdout = (result.stdout || '').slice(0, 4000);
+    const stderr = (result.stderr || '').slice(0, 2000);
+    return { success: exitCode === 0, packages: safe, exit_code: exitCode, stdout, stderr };
   } catch (e) {
     return { error: e.message };
   }
