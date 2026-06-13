@@ -5,7 +5,7 @@ import db from './database.js';
 const { ChannelSummary } = db;
 
 const OPENROUTER_KEY = process.env.OPENROUTER_APIKEY;
-const MODEL_MAIN = 'qwen/qwen3-plus';
+const MODEL_MAIN = 'qwen/qwen3.7-plus';
 const MODEL_FAST = 'ibm-granite/granite-4.1-8b';  // 131k ctx, used for summarisation + turn-taking
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 

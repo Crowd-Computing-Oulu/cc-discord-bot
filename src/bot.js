@@ -369,7 +369,7 @@ client.on('messageCreate', async message => {
     await message.reply(chunks[0]);
     for (const chunk of chunks.slice(1)) await message.channel.send(chunk);
   } catch (e) {
-    console.error('Channel message error:', e.message);
+    console.error('Channel message error:', e.message, e.response?.data ?? '');
     if (directMention) await message.reply('Sorry, I ran into an error processing that.');
   }
 });
