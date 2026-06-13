@@ -1,11 +1,41 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import pdfParse from 'pdf-parse/lib/pdf-parse.js';
+import { createRequire } from 'module';
+const _require = createRequire(import.meta.url);
+const pdfParse = _require('pdf-parse');
 import mammoth from 'mammoth';
 import { parse as csvParse } from 'csv-parse/sync';
 import moment from 'moment-timezone';
 import { AttachmentBuilder, EmbedBuilder } from 'discord.js';
 import db from './database.js';
+import fs from 'fs';
+import path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import os from 'os';
+
+const execFileAsync = promisify(execFile);
+
+const IMAGES_DIR = path.resolve('generated_images');
+if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
+
+const USER_FILES_DIR = path.resolve('user_files');
+if (!fs.existsSync(USER_FILES_DIR)) fs.mkdirSync(USER_FILES_DIR, { recursive: true });
+
+function getUserDir(userId) {
+  const dir = path.join(USER_FILES_DIR, userId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function safeUserPath(userId, filePath) {
+  const base = getUserDir(userId);
+  const resolved = path.resolve(base, filePath);
+  if (!resolved.startsWith(base + path.sep) && resolved !== base) {
+    throw new Error('Path traversal not allowed');
+  }
+  return resolved;
+}
 
 const _OR_KEY = process.env.OPENROUTER_APIKEY;
 const _OR_HEADERS = {
@@ -444,14 +474,15 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'generate_image',
-      description: 'Generate an image from a text prompt and post it in the Discord channel.',
+      description: 'Generate an image from a text prompt, save it to persistent storage, and optionally post it immediately. Works in DMs too — omit channel_id to just save it for later. Use send_image to deliver a saved image to anyone.',
       parameters: {
         type: 'object',
         properties: {
           prompt: { type: 'string' },
-          channel_id: { type: 'string' },
+          channel_id: { type: 'string', description: 'Channel to post the image in immediately (optional — omit to save without posting)' },
+          user_id: { type: 'string', description: 'DM this user the image immediately (optional)' },
         },
-        required: ['prompt', 'channel_id'],
+        required: ['prompt'],
       },
     },
   },
@@ -504,6 +535,105 @@ export const toolDefinitions = [
     },
   },
 
+  // ── Filesystem ──
+  {
+    type: 'function',
+    function: {
+      name: 'fs_write',
+      description: 'Write (or overwrite) a file in the user\'s personal file storage. Use this to save notes, scripts, data, or any text content.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: 'Relative path within the user\'s storage, e.g. "notes.txt" or "scripts/hello.py"' },
+          content: { type: 'string', description: 'Text content to write' },
+          user_id: { type: 'string', description: 'Owner of the file' },
+        },
+        required: ['file_path', 'content', 'user_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fs_read',
+      description: 'Read a file from the user\'s personal file storage.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          user_id: { type: 'string' },
+        },
+        required: ['file_path', 'user_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fs_list',
+      description: 'List files and folders in the user\'s personal file storage (or a subdirectory of it).',
+      parameters: {
+        type: 'object',
+        properties: {
+          directory: { type: 'string', description: 'Relative subdirectory to list (optional, defaults to root)' },
+          user_id: { type: 'string' },
+        },
+        required: ['user_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fs_delete',
+      description: 'Delete a file from the user\'s personal file storage.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          user_id: { type: 'string' },
+        },
+        required: ['file_path', 'user_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fs_upload',
+      description: 'Upload a file from the user\'s personal storage to a Discord channel or DM.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: 'Relative path in the user\'s storage' },
+          user_id: { type: 'string' },
+          channel_id: { type: 'string', description: 'Channel to post the file in (optional)' },
+          dm_user_id: { type: 'string', description: 'User to DM the file to (optional)' },
+          caption: { type: 'string', description: 'Optional message to accompany the file' },
+        },
+        required: ['file_path', 'user_id'],
+      },
+    },
+  },
+
+  // ── Python ──
+  {
+    type: 'function',
+    function: {
+      name: 'python_run',
+      description: 'Write a Python script to the user\'s file storage and execute it. Returns stdout and stderr. The script runs in a 30-second timeout sandbox. You can import standard library modules freely. For data science: numpy, pandas, matplotlib are available if installed on the host.',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: 'Python source code to run' },
+          file_name: { type: 'string', description: 'Script filename to save as, e.g. "analysis.py" (defaults to "script.py")' },
+          user_id: { type: 'string' },
+        },
+        required: ['code', 'user_id'],
+      },
+    },
+  },
+
   // ── Fun / utility ──
   {
     type: 'function',
@@ -533,6 +663,30 @@ export const toolDefinitions = [
           channel_id: { type: 'string', description: 'Channel to post weather embed in' },
         },
         required: ['location', 'channel_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_images',
+      description: 'List previously generated images stored by Sissy. Returns IDs and prompts so you can pick one to send.',
+      parameters: { type: 'object', properties: { limit: { type: 'integer', description: 'Max number of images to list (default 10)' } }, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_image',
+      description: 'Send a previously generated image (by ID from list_images) to a channel or a user via DM.',
+      parameters: {
+        type: 'object',
+        properties: {
+          image_id: { type: 'integer', description: 'ID from list_images' },
+          channel_id: { type: 'string', description: 'Channel to post in (optional)' },
+          user_id: { type: 'string', description: 'User to DM the image to (optional)' },
+        },
+        required: ['image_id'],
       },
     },
   },
@@ -567,11 +721,19 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'memory_list': return await toolMemoryList(args);
     case 'memory_delete': return await toolMemoryDelete(args);
     case 'generate_image': return await toolGenerateImage(args, discordClient);
+    case 'list_images': return await toolListImages(args);
+    case 'send_image': return await toolSendImage(args, discordClient);
     case 'arxiv_search': return await toolArxivSearch(args);
     case 'semantic_scholar_search': return await toolSemanticScholarSearch(args);
     case 'lookup_paper': return await toolLookupPaper(args);
     case 'roll_dice': return await toolRollDice(args, discordClient);
     case 'get_weather': return await toolGetWeather(args, discordClient);
+    case 'fs_write': return await toolFsWrite({ ...args, user_id: args.user_id || requestingUserId });
+    case 'fs_read': return await toolFsRead({ ...args, user_id: args.user_id || requestingUserId });
+    case 'fs_list': return await toolFsList({ ...args, user_id: args.user_id || requestingUserId });
+    case 'fs_delete': return await toolFsDelete({ ...args, user_id: args.user_id || requestingUserId });
+    case 'fs_upload': return await toolFsUpload({ ...args, user_id: args.user_id || requestingUserId }, discordClient);
+    case 'python_run': return await toolPythonRun({ ...args, user_id: args.user_id || requestingUserId });
     default: return { error: `Unknown tool: ${name}` };
   }
 }
@@ -929,7 +1091,7 @@ async function toolMemoryDelete({ key }) {
 
 // ─── Image generation ─────────────────────────────────────────────────────────
 
-async function toolGenerateImage({ prompt, channel_id }, discordClient) {
+async function toolGenerateImage({ prompt, channel_id, user_id }, discordClient) {
   let res;
   try {
     res = await axios.post(
@@ -965,11 +1127,54 @@ async function toolGenerateImage({ prompt, channel_id }, discordClient) {
   if (!imageData) return { error: 'No image returned by model', raw: JSON.stringify(res.data).slice(0, 300) };
 
   const ext = mimeType.split('/')[1] || 'png';
+  const filename = `${Date.now()}.${ext}`;
+  const filePath = path.join(IMAGES_DIR, filename);
+  fs.writeFileSync(filePath, imageData);
+
+  const record = await db.GeneratedImage.create({ filePath, prompt, mimeType, createdAt: new Date() });
+
   const attachment = new AttachmentBuilder(imageData, { name: `generated.${ext}` });
-  const channel = await discordClient.channels.fetch(channel_id);
-  if (!channel?.isTextBased()) return { error: 'Channel not found' };
-  await channel.send({ files: [attachment] });
-  return { success: true, prompt };
+
+  if (channel_id) {
+    const channel = await discordClient.channels.fetch(channel_id);
+    if (!channel?.isTextBased()) return { error: 'Channel not found' };
+    await channel.send({ files: [attachment] });
+  }
+
+  if (user_id) {
+    const user = await discordClient.users.fetch(user_id);
+    await user.send({ files: [attachment] });
+  }
+
+  return { success: true, image_id: record.id, prompt, sent_to_channel: !!channel_id, sent_to_user: !!user_id };
+}
+
+async function toolListImages({ limit = 10 } = {}) {
+  const rows = await db.GeneratedImage.findAll({ order: [['createdAt', 'DESC']], limit: Math.min(limit, 50) });
+  return rows.map(r => ({ id: r.id, prompt: r.prompt, createdAt: r.createdAt }));
+}
+
+async function toolSendImage({ image_id, channel_id, user_id }, discordClient) {
+  if (!channel_id && !user_id) return { error: 'Provide channel_id or user_id' };
+  const record = await db.GeneratedImage.findByPk(image_id);
+  if (!record) return { error: `No image found with id ${image_id}` };
+  if (!fs.existsSync(record.filePath)) return { error: 'Image file missing from disk' };
+
+  const ext = record.mimeType.split('/')[1] || 'png';
+  const attachment = new AttachmentBuilder(record.filePath, { name: `generated.${ext}` });
+
+  if (channel_id) {
+    const channel = await discordClient.channels.fetch(channel_id);
+    if (!channel?.isTextBased()) return { error: 'Channel not found' };
+    await channel.send({ files: [attachment] });
+  }
+
+  if (user_id) {
+    const user = await discordClient.users.fetch(user_id);
+    await user.send({ files: [attachment] });
+  }
+
+  return { success: true, sent_to_channel: !!channel_id, sent_to_user: !!user_id };
 }
 
 // ─── Paper tools ──────────────────────────────────────────────────────────────
@@ -1213,4 +1418,112 @@ async function toolGetWeather({ location, channel_id }, discordClient) {
   }
 
   return { success: true, location: cityName, temp_C: tempC, description: desc };
+}
+
+// ─── Filesystem tools ─────────────────────────────────────────────────────────
+
+async function toolFsWrite({ file_path, content, user_id }) {
+  try {
+    const target = safeUserPath(user_id, file_path);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+    const size = Buffer.byteLength(content, 'utf8');
+    return { success: true, file_path, size_bytes: size };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function toolFsRead({ file_path, user_id }) {
+  try {
+    const target = safeUserPath(user_id, file_path);
+    if (!fs.existsSync(target)) return { error: `File not found: ${file_path}` };
+    const stat = fs.statSync(target);
+    if (stat.isDirectory()) return { error: `${file_path} is a directory, not a file` };
+    const content = fs.readFileSync(target, 'utf8');
+    return { file_path, content: content.slice(0, 20000), truncated: content.length > 20000, size_bytes: stat.size };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function toolFsList({ directory = '', user_id }) {
+  try {
+    const base = getUserDir(user_id);
+    const target = directory ? safeUserPath(user_id, directory) : base;
+    if (!fs.existsSync(target)) return { error: `Directory not found: ${directory || '/'}` };
+    const entries = fs.readdirSync(target, { withFileTypes: true });
+    const items = entries.map(e => ({
+      name: e.name,
+      type: e.isDirectory() ? 'directory' : 'file',
+      size_bytes: e.isFile() ? fs.statSync(path.join(target, e.name)).size : undefined,
+    }));
+    return { directory: directory || '/', items };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function toolFsDelete({ file_path, user_id }) {
+  try {
+    const target = safeUserPath(user_id, file_path);
+    if (!fs.existsSync(target)) return { error: `File not found: ${file_path}` };
+    const stat = fs.statSync(target);
+    if (stat.isDirectory()) return { error: 'Cannot delete directories, only files' };
+    fs.unlinkSync(target);
+    return { success: true, deleted: file_path };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function toolFsUpload({ file_path, user_id, channel_id, dm_user_id, caption }, discordClient) {
+  if (!channel_id && !dm_user_id) return { error: 'Provide channel_id or dm_user_id' };
+  try {
+    const target = safeUserPath(user_id, file_path);
+    if (!fs.existsSync(target)) return { error: `File not found: ${file_path}` };
+    const attachment = new AttachmentBuilder(target, { name: path.basename(file_path) });
+    const payload = { files: [attachment], content: caption || undefined };
+
+    if (channel_id) {
+      const channel = await discordClient.channels.fetch(channel_id);
+      if (!channel?.isTextBased()) return { error: 'Channel not found or not text-based' };
+      await channel.send(payload);
+    }
+    if (dm_user_id) {
+      const user = await discordClient.users.fetch(dm_user_id);
+      await user.send(payload);
+    }
+    return { success: true, file_path, sent_to_channel: !!channel_id, sent_to_dm: !!dm_user_id };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+// ─── Python execution ─────────────────────────────────────────────────────────
+
+async function toolPythonRun({ code, file_name = 'script.py', user_id }) {
+  try {
+    const scriptPath = safeUserPath(user_id, file_name);
+    fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+    fs.writeFileSync(scriptPath, code, 'utf8');
+
+    const result = await execFileAsync('python3', [scriptPath], {
+      timeout: 30000,
+      maxBuffer: 1024 * 512,
+      cwd: getUserDir(user_id),
+    }).catch(err => ({
+      stdout: err.stdout || '',
+      stderr: err.stderr || err.message,
+      exitCode: err.code ?? 1,
+    }));
+
+    const stdout = (result.stdout || '').slice(0, 8000);
+    const stderr = (result.stderr || '').slice(0, 4000);
+    const exitCode = result.exitCode ?? 0;
+
+    return { success: exitCode === 0, file_name, exit_code: exitCode, stdout, stderr };
+  } catch (e) {
+    return { error: e.message };
+  }
 }

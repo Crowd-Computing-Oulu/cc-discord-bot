@@ -54,6 +54,13 @@ const BotMemory = sequelize.define('BotMemory', {
   updatedAt: { type: DataTypes.DATE, allowNull: false },
 });
 
+const GeneratedImage = sequelize.define('GeneratedImage', {
+  filePath: { type: DataTypes.STRING, allowNull: false },
+  prompt: { type: DataTypes.TEXT, allowNull: false },
+  mimeType: { type: DataTypes.STRING, allowNull: false, defaultValue: 'image/png' },
+  createdAt: { type: DataTypes.DATE, allowNull: false },
+});
+
 // Persisted conversation turns — used to survive restarts and feed daily compaction
 const ConversationLog = sequelize.define('ConversationLog', {
   channelId: { type: DataTypes.STRING, allowNull: false },
@@ -76,6 +83,7 @@ export default {
   ChannelSummary,
   BotMemory,
   ConversationLog,
+  GeneratedImage,
   initialize,
   Op,
 };
