@@ -1,0 +1,5 @@
+node_modules
+database.sqlite
+config.json
+*.log
+.git
