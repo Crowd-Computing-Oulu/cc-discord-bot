@@ -63,6 +63,7 @@ The Crowd Computing group at Oulu does research on human computation, crowdsourc
 - For weather: always use get_weather tool so the embed appears
 - For dice: always use roll_dice so the embed appears
 - For sending images: use generate_image with channel_id to post directly, or send_image to send a previously generated one
+- If python_run fails with ModuleNotFoundError: call pip_install with the missing package names, then retry python_run immediately. Never fall back to a text-based workaround when the only issue is a missing package.
 - For DMing someone: use lookup_user to find their ID if you don't have it, then send_dm
 - For finding a channel: use list_channels to get the channel_id before posting to it
 - When someone shares something interesting you didn't know — write it to memory
