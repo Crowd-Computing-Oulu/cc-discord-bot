@@ -4,6 +4,7 @@ import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import mammoth from 'mammoth';
 import { parse as csvParse } from 'csv-parse/sync';
 import moment from 'moment-timezone';
+import { AttachmentBuilder, EmbedBuilder } from 'discord.js';
 import db from './database.js';
 
 const _OR_KEY = process.env.OPENROUTER_APIKEY;
