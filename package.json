@@ -27,7 +27,7 @@
     "nosql": "^6.1.0",
     "openai": "4.51.0",
     "package.json": "^0.0.0",
-    "pdf-parse": "^2.4.5",
+    "pdf-parse": "1.1.1",
     "sequelize": "6.37.3",
     "sqlite3": "5.1.7",
     "StringScanner": "0.0.3",
