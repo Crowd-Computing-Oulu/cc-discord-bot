@@ -1,7 +1,5 @@
 {
-  "openai-org": "",
-  "openai-project": "",
-  "openai-apikey": "",
+  "openrouter-apikey": "",
   "discord-clientid": "",
   "discord-apikey": ""
 }

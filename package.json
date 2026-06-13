@@ -1,8 +1,8 @@
 {
   "name": "sissy",
-  "version": "24.6.17",
-  "description": "CC Chatbot",
-  "main": "src/Core.js",
+  "version": "26.6.13",
+  "description": "CC Chatbot — OpenRouter/Qwen3 edition",
+  "main": "src/bot.js",
   "type": "module",
   "scripts": {
     "start": "node src/bot.js"
@@ -11,24 +11,31 @@
     "@conga/annotations": "^1.0.3",
     "annotations": "^1.1.2",
     "aws-sdk": "^2.663.0",
+    "axios": "^1.17.0",
+    "cheerio": "^1.2.0",
     "conga-annotations": "^1.0.0",
+    "cron-schedule-parser": "2.0.12",
+    "csv-parse": "^6.2.1",
     "discord.js": "^14.0.0",
     "dotenv": "^8.2.0",
     "express": "^4.16.4",
+    "mammoth": "^1.12.0",
+    "marked": "^18.0.5",
+    "moment-timezone": "0.5.45",
+    "node-fetch": "^2.7.0",
+    "node-schedule": "2.1.1",
     "nosql": "^6.1.0",
+    "openai": "4.51.0",
     "package.json": "^0.0.0",
+    "pdf-parse": "^2.4.5",
+    "sequelize": "6.37.3",
+    "sqlite3": "5.1.7",
     "StringScanner": "0.0.3",
     "tmi.js": "^1.5.0",
-    "xmlhttprequest": "^1.8.0",
-    "sequelize": "6.37.3",
-    "cron-schedule-parser": "2.0.12",
-    "sqlite3": "5.1.7",
-    "moment-timezone": "0.5.45",
-    "node-schedule": "2.1.1",
-    "openai":"4.51.0"
+    "xmlhttprequest": "^1.8.0"
   },
   "engines": {
-    "node": "8.x"
+    "node": ">=18.0.0"
   },
   "repository": {
     "url": ""
