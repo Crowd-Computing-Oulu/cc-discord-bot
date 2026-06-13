@@ -147,6 +147,7 @@ export async function respondTo({
   while (loopCount < MAX_LOOPS) {
     loopCount++;
     const choice = await callOpenRouter(messages);
+    console.log(`[loop ${loopCount}] finish_reason=${choice.finish_reason} has_tool_calls=${!!(choice.message.tool_calls?.length)} content_preview=${String(choice.message.content || '').slice(0, 80)}`);
 
     if (choice.finish_reason === 'tool_calls' || (choice.message.tool_calls && choice.message.tool_calls.length > 0)) {
       // Model wants to call tools
@@ -158,10 +159,15 @@ export async function respondTo({
         try { toolArgs = JSON.parse(tc.function.arguments); } catch (_) {}
 
         console.log(`[tool] ${toolName}`, toolArgs);
-        const result = await executeTool(toolName, toolArgs, discordClient, userId);
+        let result;
+        try {
+          result = await executeTool(toolName, toolArgs, discordClient, userId);
+        } catch (err) {
+          console.error(`[tool error] ${toolName}:`, err.message);
+          result = { error: err.message };
+        }
+        console.log(`[tool result] ${toolName}: ${JSON.stringify(result).slice(0, 200)}`);
 
-        // Handle summarise_and_store_history specially — the result contains raw history
-        // that the AI will summarise on the next turn
         messages.push({
           role: 'tool',
           tool_call_id: tc.id,

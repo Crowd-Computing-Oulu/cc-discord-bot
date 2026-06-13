@@ -43,54 +43,7 @@ function extractPaperIdentifier(content) {
   return null;
 }
 
-// ─── Passive + proactive trigger heuristics ──────────────────────────────────
-
-// High-confidence signals that Sissy is being addressed or a bot task is intended
-const SISSY_TRIGGERS = [
-  /\bsissy\b/i,
-  /\bthe bot\b/i,
-  /\bremind(er)?\b/i,
-  /\bschedule\b/i,
-  /\bsummar[iy]/i,
-  /\b(can|could) (you|sissy)\b/i,
-  /\bhelp (me|us)\b/i,
-  /\blook (it )?up\b/i,
-  /\bset (a |an )?(reminder|timer|alarm)\b/i,
-  /\bask (sissy|the bot)\b/i,
-];
-
-// Patterns suggesting a funny/casual moment — Sissy occasionally joins in
-const FUNNY_PATTERNS = [
-  /😂|🤣|💀|😭|lmao|lol|haha|hehe/i,
-  /😤|😅|🫠|😩/,
-  /\bwait what\b/i,
-  /\bno way\b/i,
-  /💅|🙄|👀|🫡/,
-];
-
-// Welcome triggers — Sissy greets people introducing themselves
-const WELCOME_PATTERNS = [
-  /\bjoined the server\b/i,
-  /\bnew (here|member|person)\b/i,
-  /\bjust joined\b/i,
-  /\bintroducing myself\b/i,
-  /\bhello everyone\b/i,
-];
-
 const CONVERSATIONAL_DEPTH = 4;
-
-// Fast pre-filter: cheap regex check before we spend a Granite call.
-// Returns true if the message is obviously worth considering, false to skip entirely.
-function quickPreFilter(message, recentBotMessages) {
-  const content = message.cleanContent;
-  if (message.mentions.users.has(CLIENT_ID)) return true;
-  if (WELCOME_PATTERNS.some(r => r.test(content))) return true;
-  if (FUNNY_PATTERNS.some(r => r.test(content))) return true;
-  const triggerCount = SISSY_TRIGGERS.filter(r => r.test(content)).length;
-  if (triggerCount >= 1) return true;
-  if (recentBotMessages > 0) return true;
-  return false;
-}
 
 // ─── Discord client ───────────────────────────────────────────────────────────
 await initialize();
@@ -321,24 +274,16 @@ client.on('messageCreate', async message => {
   }
 
   if (!directMention) {
-    let recentBotCount = 0;
     let recentMsgs = [];
     try {
       const recent = await message.channel.messages.fetch({ limit: CONVERSATIONAL_DEPTH + 1 });
-      const arr = [...recent.values()].reverse();
-      recentBotCount = arr.filter(m => m.author.id === CLIENT_ID).length;
-      recentMsgs = arr.map(m => ({ name: m.author.username, message: m.cleanContent }));
+      recentMsgs = [...recent.values()].reverse().map(m => ({ name: m.author.username, message: m.cleanContent }));
     } catch (_) {}
 
-    // Stage 1: cheap regex pre-filter — skip Granite call if nothing looks relevant
-    if (!quickPreFilter(message, recentBotCount)) return;
-
-    // Stage 2: Granite decides with full conversational context
     try {
       const shouldReply = await shouldRespondWithGranite(recentMsgs, message.cleanContent);
       if (!shouldReply) return;
     } catch (e) {
-      // If Granite fails, fall back to allowing the response
       console.error('Granite turn-taking error:', e.message);
     }
   }
