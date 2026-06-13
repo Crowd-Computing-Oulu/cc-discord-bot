@@ -5,11 +5,9 @@ import mammoth from 'mammoth';
 import { parse as csvParse } from 'csv-parse/sync';
 import moment from 'moment-timezone';
 import { AttachmentBuilder } from 'discord.js';
-import { readFileSync } from 'fs';
 import db from './database.js';
 
-const _CONFIG = JSON.parse(readFileSync('./config.json', 'utf8'));
-const _OR_KEY = _CONFIG['openrouter-apikey'];
+const _OR_KEY = process.env.OPENROUTER_APIKEY;
 const _OR_HEADERS = {
   Authorization: `Bearer ${_OR_KEY}`,
   'Content-Type': 'application/json',

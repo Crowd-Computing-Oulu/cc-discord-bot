@@ -1,13 +1,10 @@
 import OpenAI from "openai";
-import { readFileSync, writeFileSync } from 'fs';
-
-
-const CONFIG = JSON.parse(readFileSync('./config.json', 'utf8'));
+import { writeFileSync } from 'fs';
 
 const openai = new OpenAI({
-  organization: CONFIG['openai-org'],
-  project: CONFIG['openai-project'],
-  apiKey: CONFIG['openai-apikey']
+  organization: process.env.OPENAI_ORG,
+  project: process.env.OPENAI_PROJECT,
+  apiKey: process.env.OPENAI_APIKEY
 });
 
 // In-memory storage for conversation context

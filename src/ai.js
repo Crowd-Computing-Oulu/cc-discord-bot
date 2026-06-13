@@ -1,13 +1,10 @@
 import axios from 'axios';
-import { readFileSync } from 'fs';
 import { toolDefinitions, executeTool } from './tools.js';
 import db from './database.js';
 
 const { ChannelSummary } = db;
 
-const CONFIG = JSON.parse(readFileSync('./config.json', 'utf8'));
-
-const OPENROUTER_KEY = CONFIG['openrouter-apikey'];
+const OPENROUTER_KEY = process.env.OPENROUTER_APIKEY;
 const MODEL_MAIN = 'qwen/qwen3-plus';
 const MODEL_FAST = 'ibm-granite/granite-4.1-8b';  // 131k ctx, used for summarisation + turn-taking
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';

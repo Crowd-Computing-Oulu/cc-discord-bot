@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      - DISCORD_APIKEY=${DISCORD_APIKEY}
+      - DISCORD_CLIENTID=${DISCORD_CLIENTID}
+      - OPENROUTER_APIKEY=${OPENROUTER_APIKEY}
+      - OPENAI_APIKEY=${OPENAI_APIKEY}
+      - OPENAI_ORG=${OPENAI_ORG}
+      - OPENAI_PROJECT=${OPENAI_PROJECT}
+    volumes:
+      - ./database.sqlite:/app/database.sqlite

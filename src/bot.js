@@ -1,5 +1,4 @@
 import { Client, GatewayIntentBits, Events, SlashCommandBuilder, Partials, ChannelType } from 'discord.js';
-import { readFileSync } from 'fs';
 import moment from 'moment-timezone';
 import { REST, Routes } from 'discord.js';
 import db from './database.js';
@@ -7,9 +6,8 @@ import { respondTo, respondToDM, shouldRespondWithGranite } from './ai.js';
 
 const { Reminder, RepeatReminder, ScheduledTask, initialize, Op } = db;
 
-const CONFIG = JSON.parse(readFileSync('./config.json', 'utf8'));
-const TOKEN = CONFIG['discord-apikey'];
-const CLIENT_ID = CONFIG['discord-clientid'];
+const TOKEN = process.env.DISCORD_APIKEY;
+const CLIENT_ID = process.env.DISCORD_CLIENTID;
 
 const DM_WHITELIST = [
   'szabodanika', 'simohosio', 'aq4065', 
