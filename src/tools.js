@@ -634,6 +634,27 @@ export const toolDefinitions = [
     },
   },
 
+  // ── Vision / OCR ──
+  {
+    type: 'function',
+    function: {
+      name: 'read_images',
+      description: 'Extract all readable text and structured data from one or more images using vision AI. Use this to OCR screenshots, workout logs, receipts, whiteboards, charts, etc. Pass Discord CDN image URLs. Returns extracted text for each image.',
+      parameters: {
+        type: 'object',
+        properties: {
+          image_urls: {
+            type: 'array',
+            description: 'List of image URLs (Discord CDN or any public URL)',
+            items: { type: 'string' },
+          },
+          prompt: { type: 'string', description: 'What to extract or focus on, e.g. "extract workout duration and total weight volume" (optional, defaults to extracting all text/data)' },
+        },
+        required: ['image_urls'],
+      },
+    },
+  },
+
   // ── Fun / utility ──
   {
     type: 'function',
@@ -734,6 +755,7 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'fs_delete': return await toolFsDelete({ ...args, user_id: args.user_id || requestingUserId });
     case 'fs_upload': return await toolFsUpload({ ...args, user_id: args.user_id || requestingUserId }, discordClient);
     case 'python_run': return await toolPythonRun({ ...args, user_id: args.user_id || requestingUserId });
+    case 'read_images': return await toolReadImages(args);
     default: return { error: `Unknown tool: ${name}` };
   }
 }
@@ -1526,4 +1548,35 @@ async function toolPythonRun({ code, file_name = 'script.py', user_id }) {
   } catch (e) {
     return { error: e.message };
   }
+}
+
+// ─── Vision / OCR ────────────────────────────────────────────────────────────
+
+async function toolReadImages({ image_urls, prompt = 'Extract all text, numbers, and structured data visible in this image.' }) {
+  if (!image_urls || image_urls.length === 0) return { error: 'No image URLs provided' };
+
+  const results = [];
+  for (const url of image_urls.slice(0, 10)) {
+    try {
+      const content = [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url } },
+      ];
+      const res = await axios.post(
+        'https://openrouter.ai/api/v1/chat/completions',
+        {
+          model: 'google/gemini-2.5-flash',
+          messages: [{ role: 'user', content }],
+          max_tokens: 1024,
+        },
+        { headers: _OR_HEADERS, timeout: 30000 }
+      );
+      const text = res.data.choices[0].message.content.trim();
+      results.push({ url, extracted: text });
+    } catch (e) {
+      const detail = e.response?.data ? JSON.stringify(e.response.data).slice(0, 200) : e.message;
+      results.push({ url, error: detail });
+    }
+  }
+  return { results };
 }
