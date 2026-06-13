@@ -174,6 +174,7 @@ export async function shouldRespondWithGranite(recentMessages, newMessage, botNa
 export async function respondTo({
   channelId,
   userId,
+  username,
   input,
   pastMessages = [],
   imageUrls = [],
@@ -234,7 +235,7 @@ export async function respondTo({
     preamble = 'Recent channel messages:\n' + pastMessages.map(m => `${m.name}: ${m.message}`).join('\n') + '\n\n';
   }
 
-  let userText = preamble + input;
+  let userText = preamble + (username ? `${username}: ${input}` : input);
   if (attachments.length > 0) {
     userText += '\n\n[Attached files: ' + attachments.map(a => `${a.name} (${a.url})`).join(', ') + '. Use read_file tool to read them.]';
   }
@@ -431,12 +432,13 @@ export function scheduleNightlyCompaction() {
 
 // ─── DM version (per-user context) ───────────────────────────────────────────
 
-export async function respondToDM({ userId, input, imageUrls = [], attachments = [], discordClient }) {
+export async function respondToDM({ userId, username, input, imageUrls = [], attachments = [], discordClient }) {
   const contextKey = `dm_${userId}`;
   if (!channelContexts.has(contextKey)) channelContexts.set(contextKey, []);
   return respondTo({
     channelId: contextKey,
     userId,
+    username,
     input,
     imageUrls,
     attachments,

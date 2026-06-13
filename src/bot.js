@@ -258,6 +258,7 @@ client.on('messageCreate', async message => {
       try {
         response = await respondToDM({
           userId: message.author.id,
+          username: message.author.username,
           input: message.cleanContent,
           imageUrls,
           attachments: files,
@@ -318,16 +319,23 @@ client.on('messageCreate', async message => {
 
   if (!directMention && !isReplyToBot) {
     let recentMsgs = [];
+    let sissyWasLastSpeaker = false;
     try {
       const recent = await message.channel.messages.fetch({ limit: CONVERSATIONAL_DEPTH + 1 });
-      recentMsgs = [...recent.values()].reverse().map(m => ({ name: m.author.username, message: m.cleanContent }));
+      const sorted = [...recent.values()].reverse();
+      // Check if the message immediately before this one was from Sissy
+      const prev = sorted[sorted.length - 2];
+      if (prev && prev.author.id === client.user.id) sissyWasLastSpeaker = true;
+      recentMsgs = sorted.map(m => ({ name: m.author.username, message: m.cleanContent }));
     } catch (_) {}
 
-    try {
-      const shouldReply = await shouldRespondWithGranite(recentMsgs, message.cleanContent);
-      if (!shouldReply) return;
-    } catch (e) {
-      console.error('Granite turn-taking error:', e.message);
+    if (!sissyWasLastSpeaker) {
+      try {
+        const shouldReply = await shouldRespondWithGranite(recentMsgs, message.cleanContent);
+        if (!shouldReply) return;
+      } catch (e) {
+        console.error('Granite turn-taking error:', e.message);
+      }
     }
   }
 
@@ -345,6 +353,7 @@ client.on('messageCreate', async message => {
       response = await respondTo({
         channelId: message.channelId,
         userId: message.author.id,
+        username: message.author.username,
         input: message.cleanContent,
         pastMessages: history,
         imageUrls,
@@ -387,6 +396,7 @@ client.on('interactionCreate', async interaction => {
       const response = await respondTo({
         channelId: interaction.channelId,
         userId: interaction.user.id,
+        username: interaction.user.username,
         input,
         pastMessages,
         discordClient: client,
