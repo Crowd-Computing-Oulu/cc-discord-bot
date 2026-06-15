@@ -146,18 +146,11 @@ async function fetchPastMessages(channel, limit = 20) {
 
 // ─── Background task runner ───────────────────────────────────────────────────
 
-// Try DM first; fall back to a channel mention if DM fails or is unavailable
+// Post to channel first (with @mention); DM as fallback if no channel is set
 async function deliverReminder(client, userId, title, pingUserId, channelId, label = '🔔 Reminder') {
-  const mention = pingUserId ? ` <@${pingUserId}>` : `<@${userId}>`;
-  const dmText = `${label}: **${title}**${pingUserId ? ` (ping: <@${pingUserId}>)` : ''}`;
+  const mention = pingUserId ? `<@${pingUserId}>` : `<@${userId}>`;
   const channelText = `${label}: ${mention} **${title}**`;
-
-  let dmSent = false;
-  try {
-    const user = await client.users.fetch(userId);
-    await user.send(dmText);
-    dmSent = true;
-  } catch (_) {}
+  const dmText = `${label}: **${title}**`;
 
   if (channelId) {
     try {
@@ -169,7 +162,11 @@ async function deliverReminder(client, userId, title, pingUserId, channelId, lab
     } catch (_) {}
   }
 
-  if (!dmSent) {
+  // Fall back to DM if no channel or channel fetch failed
+  try {
+    const user = await client.users.fetch(userId);
+    await user.send(dmText);
+  } catch (_) {
     console.error(`Could not deliver reminder "${title}" to user ${userId} — no DM and no channel`);
   }
 }
@@ -235,7 +232,8 @@ function computeNextRun(cronExpr, after) {
     if (dom !== '*') candidate.add(1, 'month');
     else if (dow !== '*') candidate.add(1, 'week');
     else if (hour !== '*') candidate.add(1, 'day');
-    else candidate.add(1, 'hour');
+    else if (min !== '*') candidate.add(1, 'hour');
+    else candidate.add(1, 'minute'); // fully wildcard cron — advance by 1 min as safe fallback
   }
   return candidate.toDate();
 }

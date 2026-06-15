@@ -89,7 +89,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'set_reminder',
-      description: 'Set a one-time reminder for a user. Posts a DM (and optionally a channel ping) at the specified time. Always confirm with the user what time you interpreted.',
+      description: 'Set a one-time reminder. Posts to the channel (with @mention) if channel_id is given, otherwise falls back to DM. Always include channel_id when reminding multiple people or when the user asked in a channel. Always confirm with the user what time you interpreted.',
       parameters: {
         type: 'object',
         properties: {
@@ -107,7 +107,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'set_repeating_reminder',
-      description: 'Set a repeating reminder. repeat_spec: daily, weekly, monthly, weekdays, weekends, hourly, or a 5-part cron expression.',
+      description: 'Set a repeating reminder. repeat_spec: daily, weekly, monthly, weekdays, weekends, hourly, or a 5-part cron expression. Always include channel_id when reminding multiple people or when the request came from a channel — the reminder will @mention the user there.',
       parameters: {
         type: 'object',
         properties: {

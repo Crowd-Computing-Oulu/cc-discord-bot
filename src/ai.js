@@ -57,7 +57,7 @@ The Crowd Computing group at Oulu does research on human computation, crowdsourc
 ## Tool use
 - Use tools proactively when they improve your answer
 - NEVER claim you did something without actually calling the tool. If you say you sent an image, you must have called generate_image or send_image. If you say you DMed someone, you must have called send_dm. No fake confirmations.
-- For reminders/timers: always post an embed confirmation (include channel_id)
+- For reminders/timers: always include channel_id (the current channel) so the reminder posts there with an @mention — never use DM-only for channel-based or group reminders. Always post a confirmation embed.
 - For polls: use create_poll and post to the current channel
 - For paper links: use lookup_paper and post results as post_embed with title, authors, venue, summary
 - For weather: always use get_weather tool so the embed appears
@@ -196,7 +196,26 @@ export async function respondTo({
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false,
   });
+  // Build member roster so the model always has user IDs without needing lookup_user
+  let memberRosterBlock = '';
+  if (discordClient) {
+    try {
+      const memberLines = [];
+      for (const guild of discordClient.guilds.cache.values()) {
+        const members = await guild.members.fetch();
+        for (const member of members.values()) {
+          if (member.user.bot) continue;
+          memberLines.push(`${member.displayName} (@${member.user.username}) → ID: ${member.user.id}`);
+        }
+      }
+      if (memberLines.length > 0) {
+        memberRosterBlock = `\n\n[Server member roster — use these IDs directly with send_dm, set_reminder, etc. — do NOT ask users for their IDs or claim you don't have them]:\n${memberLines.join('\n')}`;
+      }
+    } catch (_) {}
+  }
+
   let systemContent = SYSTEM_PROMPT + `\n\n[Current time: ${nowHelsinkiStr} (Europe/Helsinki / EET)]` +
+    memberRosterBlock +
     (userId ? `\n\n[The person you are responding to has Discord user ID: ${userId}. Use this directly with send_dm — do NOT ask them for their user ID.]` : '') +
     (!isDM ? `\n\n[The current channel ID is: ${channelId}. Use this directly with tools like generate_image, read_channel, create_poll, etc. — do NOT ask for the channel ID.]` : '');
 
