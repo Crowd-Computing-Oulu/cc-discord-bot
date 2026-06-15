@@ -10,4 +10,7 @@ services:
       - OPENAI_ORG=${OPENAI_ORG}
       - OPENAI_PROJECT=${OPENAI_PROJECT}
     volumes:
-      - ./database.sqlite:/app/database.sqlite
+      - db-data:/app/data
+
+volumes:
+  db-data:
