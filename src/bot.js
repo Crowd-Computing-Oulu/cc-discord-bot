@@ -4,7 +4,7 @@ import { REST, Routes } from 'discord.js';
 import db from './database.js';
 import { respondTo, respondToDM, shouldRespondWithGranite, scheduleNightlyCompaction } from './ai.js';
 
-const { Reminder, RepeatReminder, ScheduledTask, initialize, Op } = db;
+const { Reminder, RepeatReminder, ScheduledTask, ChannelSummary, BotMemory, initialize, Op } = db;
 
 const TOKEN = process.env.DISCORD_APIKEY;
 const CLIENT_ID = process.env.DISCORD_CLIENTID;
@@ -95,6 +95,54 @@ const cmds = [
     .setName('summarise')
     .setDescription('Ask Sissy to summarise and store this channel\'s history for long-term memory.')
     .addIntegerOption(o => o.setName('limit').setDescription('Number of messages to summarise (default 100)')),
+
+  new SlashCommandBuilder()
+    .setName('list')
+    .setDescription('List DB entries of a given type.')
+    .addStringOption(o =>
+      o.setName('type')
+        .setDescription('What to list')
+        .setRequired(true)
+        .addChoices(
+          { name: 'reminders', value: 'reminders' },
+          { name: 'repeat-reminders', value: 'repeat' },
+          { name: 'scheduled-tasks', value: 'tasks' },
+          { name: 'memory', value: 'memory' },
+          { name: 'channel-summaries', value: 'summaries' },
+        ))
+    .addStringOption(o => o.setName('filter').setDescription('Optional filter string (name/key/category contains)')),
+
+  new SlashCommandBuilder()
+    .setName('delete')
+    .setDescription('Delete a DB entry by type and ID.')
+    .addStringOption(o =>
+      o.setName('type')
+        .setDescription('Type of entry')
+        .setRequired(true)
+        .addChoices(
+          { name: 'reminder', value: 'reminder' },
+          { name: 'repeat-reminder', value: 'repeat' },
+          { name: 'scheduled-task', value: 'task' },
+          { name: 'memory', value: 'memory' },
+          { name: 'channel-summary', value: 'summary' },
+        ))
+    .addStringOption(o => o.setName('id').setDescription('ID (or memory key / channelId for those types)').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('memory')
+    .setDescription('Read or write a bot memory key.')
+    .addStringOption(o =>
+      o.setName('action')
+        .setDescription('What to do')
+        .setRequired(true)
+        .addChoices(
+          { name: 'get', value: 'get' },
+          { name: 'set', value: 'set' },
+          { name: 'delete', value: 'delete' },
+        ))
+    .addStringOption(o => o.setName('key').setDescription('Memory key').setRequired(true))
+    .addStringOption(o => o.setName('value').setDescription('New value (for set)'))
+    .addStringOption(o => o.setName('category').setDescription('Category (for set)')),
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -153,8 +201,8 @@ async function fetchPastMessages(channel, limit = 20) {
 // Post to channel first (with @mention); DM as fallback if no channel is set
 async function deliverReminder(client, userId, title, pingUserId, channelId, label = '🔔 Reminder') {
   const mention = pingUserId ? `<@${pingUserId}>` : `<@${userId}>`;
-  const channelText = `${label}: ${mention} **${title}**`;
-  const dmText = `${label}: **${title}**`;
+  const channelText = label ? `${label}: ${mention} **${title}**` : `${mention} **${title}**`;
+  const dmText = label ? `${label}: **${title}**` : `**${title}**`;
 
   if (channelId) {
     try {
@@ -194,7 +242,7 @@ setInterval(async () => {
   const dueRepeat = await RepeatReminder.findAll({ where: { nextRunAt: { [Op.lte]: now } } });
   for (const r of dueRepeat) {
     try {
-      await deliverReminder(client, r.userId, r.title, r.pingUserId, r.channelId, '🔔 Repeating Reminder');
+      await deliverReminder(client, r.userId, r.title, r.pingUserId, r.channelId, '');
       const next = computeNextRun(r.cronExpr, now);
       await r.update({ lastSentAt: now, nextRunAt: next });
     } catch (e) { console.error('Repeating reminder delivery failed:', e.message); }
@@ -445,6 +493,137 @@ client.on('interactionCreate', async interaction => {
     ].filter(Boolean).join(' ');
     await interaction.reply(`⏰ Timer set for **${user.displayName}**: **"${name}"** — fires in **${humanDuration}** (${remindAt.toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })})`  );
     return;
+  }
+
+  if (interaction.commandName === 'list') {
+    const type = interaction.options.getString('type');
+    const filter = interaction.options.getString('filter')?.toLowerCase() ?? '';
+
+    let rows, lines;
+
+    if (type === 'reminders') {
+      rows = await Reminder.findAll({ order: [['remindAt', 'ASC']] });
+      lines = rows
+        .filter(r => !filter || r.title.toLowerCase().includes(filter))
+        .map(r => `\`${r.id}\` **${r.title}** — <@${r.userId}> at ${new Date(r.remindAt).toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })}`);
+      if (!lines.length) { await interaction.reply('No reminders found.'); return; }
+      await interaction.reply(`**Reminders (${lines.length}):**\n${lines.join('\n')}`.slice(0, 2000));
+      return;
+    }
+
+    if (type === 'repeat') {
+      rows = await RepeatReminder.findAll({ order: [['nextRunAt', 'ASC']] });
+      lines = rows
+        .filter(r => !filter || r.title.toLowerCase().includes(filter))
+        .map(r => `\`${r.id}\` **${r.title}** — \`${r.cronExpr}\` next: ${new Date(r.nextRunAt).toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })}`);
+      if (!lines.length) { await interaction.reply('No repeating reminders found.'); return; }
+      await interaction.reply(`**Repeating Reminders (${lines.length}):**\n${lines.join('\n')}`.slice(0, 2000));
+      return;
+    }
+
+    if (type === 'tasks') {
+      rows = await ScheduledTask.findAll({ order: [['runAt', 'ASC']] });
+      lines = rows
+        .filter(r => !filter || r.prompt.toLowerCase().includes(filter))
+        .map(r => `\`${r.id}\` at ${new Date(r.runAt).toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })}: ${r.prompt.slice(0, 80)}`);
+      if (!lines.length) { await interaction.reply('No scheduled tasks found.'); return; }
+      await interaction.reply(`**Scheduled Tasks (${lines.length}):**\n${lines.join('\n')}`.slice(0, 2000));
+      return;
+    }
+
+    if (type === 'memory') {
+      rows = await BotMemory.findAll({ order: [['key', 'ASC']] });
+      lines = rows
+        .filter(r => !filter || r.key.toLowerCase().includes(filter) || (r.category ?? '').toLowerCase().includes(filter))
+        .map(r => `\`${r.key}\`${r.category ? ` [${r.category}]` : ''}: ${r.value.slice(0, 100)}`);
+      if (!lines.length) { await interaction.reply('No memory entries found.'); return; }
+      await interaction.reply(`**Bot Memory (${lines.length}):**\n${lines.join('\n')}`.slice(0, 2000));
+      return;
+    }
+
+    if (type === 'summaries') {
+      rows = await ChannelSummary.findAll({ order: [['updatedAt', 'DESC']] });
+      lines = rows
+        .filter(r => !filter || r.channelId.includes(filter))
+        .map(r => `\`${r.channelId}\` (${r.messageCount} msgs, updated ${new Date(r.updatedAt).toLocaleString('en-FI', { timeZone: 'Europe/Helsinki' })}): ${r.summary.slice(0, 80)}`);
+      if (!lines.length) { await interaction.reply('No channel summaries found.'); return; }
+      await interaction.reply(`**Channel Summaries (${lines.length}):**\n${lines.join('\n')}`.slice(0, 2000));
+      return;
+    }
+  }
+
+  if (interaction.commandName === 'delete') {
+    const type = interaction.options.getString('type');
+    const id = interaction.options.getString('id');
+
+    if (type === 'reminder') {
+      const r = await Reminder.findByPk(id);
+      if (!r) { await interaction.reply(`No reminder with ID \`${id}\`.`); return; }
+      await r.destroy();
+      await interaction.reply(`Deleted reminder \`${id}\`: **${r.title}**`);
+      return;
+    }
+
+    if (type === 'repeat') {
+      const r = await RepeatReminder.findByPk(id);
+      if (!r) { await interaction.reply(`No repeating reminder with ID \`${id}\`.`); return; }
+      await r.destroy();
+      await interaction.reply(`Deleted repeating reminder \`${id}\`: **${r.title}**`);
+      return;
+    }
+
+    if (type === 'task') {
+      const r = await ScheduledTask.findByPk(id);
+      if (!r) { await interaction.reply(`No scheduled task with ID \`${id}\`.`); return; }
+      await r.destroy();
+      await interaction.reply(`Deleted scheduled task \`${id}\`.`);
+      return;
+    }
+
+    if (type === 'memory') {
+      const r = await BotMemory.findByPk(id);
+      if (!r) { await interaction.reply(`No memory entry with key \`${id}\`.`); return; }
+      await r.destroy();
+      await interaction.reply(`Deleted memory key \`${id}\`.`);
+      return;
+    }
+
+    if (type === 'summary') {
+      const r = await ChannelSummary.findByPk(id);
+      if (!r) { await interaction.reply(`No channel summary with ID \`${id}\`.`); return; }
+      await r.destroy();
+      await interaction.reply(`Deleted channel summary for \`${id}\`.`);
+      return;
+    }
+  }
+
+  if (interaction.commandName === 'memory') {
+    const action = interaction.options.getString('action');
+    const key = interaction.options.getString('key');
+
+    if (action === 'get') {
+      const r = await BotMemory.findByPk(key);
+      if (!r) { await interaction.reply(`No memory entry for key \`${key}\`.`); return; }
+      await interaction.reply(`**\`${key}\`**${r.category ? ` [${r.category}]` : ''}\n${r.value}`.slice(0, 2000));
+      return;
+    }
+
+    if (action === 'set') {
+      const value = interaction.options.getString('value');
+      const category = interaction.options.getString('category');
+      if (!value) { await interaction.reply('Provide a `value` to set.'); return; }
+      await BotMemory.upsert({ key, value, category: category ?? null, updatedAt: new Date() });
+      await interaction.reply(`Memory key \`${key}\` updated.`);
+      return;
+    }
+
+    if (action === 'delete') {
+      const r = await BotMemory.findByPk(key);
+      if (!r) { await interaction.reply(`No memory entry for key \`${key}\`.`); return; }
+      await r.destroy();
+      await interaction.reply(`Deleted memory key \`${key}\`.`);
+      return;
+    }
   }
 
   if (interaction.commandName === 'summarise') {
