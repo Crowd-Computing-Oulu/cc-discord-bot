@@ -62,7 +62,7 @@ The Crowd Computing group at Oulu does research on human computation, crowdsourc
 - For paper links: use lookup_paper and post results as post_embed with title, authors, venue, summary
 - For weather: always use get_weather tool so the embed appears
 - For dice: always use roll_dice so the embed appears
-- For sending images: use generate_image with channel_id to post directly, or send_image to send a previously generated one
+- For sending images: use generate_image with channel_id to post directly, or send_image to send a previously generated one. If someone asks to send the same image to someone else or another channel, ALWAYS use send_image with the image_id from the current conversation — never regenerate.
 - If python_run fails with ModuleNotFoundError: call pip_install with the missing package names, then retry python_run immediately. Never fall back to a text-based workaround when the only issue is a missing package.
 - For DMing someone: use lookup_user to find their ID if you don't have it, then send_dm
 - For finding a channel: use list_channels to get the channel_id before posting to it
@@ -275,6 +275,8 @@ export async function respondTo({
   let finalText = null;
   let loopCount = 0;
   const MAX_LOOPS = 8;
+  // Collect image_ids generated this turn so they survive into context
+  const generatedImageIds = [];
 
   while (loopCount < MAX_LOOPS) {
     loopCount++;
@@ -301,6 +303,11 @@ export async function respondTo({
         }
         console.log(`[tool result] ${toolName}: ${JSON.stringify(result).slice(0, 200)}`);
 
+        // Track generated images so the model can reference them in follow-up turns
+        if (toolName === 'generate_image' && result?.image_id) {
+          generatedImageIds.push({ id: result.image_id, prompt: toolArgs.prompt });
+        }
+
         messages.push({
           role: 'tool',
           tool_call_id: tc.id,
@@ -317,13 +324,23 @@ export async function respondTo({
         finalText = '';
       }
 
+      // Append image IDs to the saved assistant turn so follow-up "send to X" requests
+      // don't trigger a regeneration — the model can use send_image with these IDs instead.
+      let assistantContent = finalText;
+      if (generatedImageIds.length > 0) {
+        const note = generatedImageIds
+          .map(img => `[generated image_id=${img.id} prompt="${img.prompt}"]`)
+          .join(' ');
+        assistantContent = assistantContent ? `${assistantContent} ${note}` : note;
+      }
+
       const userContentStr = typeof userContent === 'string' ? userContent : JSON.stringify(userContent);
       ctx.push({ role: 'user', content: userContentStr });
-      ctx.push({ role: 'assistant', content: finalText });
+      ctx.push({ role: 'assistant', content: assistantContent });
       trimContext(ctx);
       // Persist to DB (fire-and-forget — don't block the reply)
       logTurn(channelId, 'user', userContentStr).catch(() => {});
-      logTurn(channelId, 'assistant', finalText).catch(() => {});
+      logTurn(channelId, 'assistant', assistantContent).catch(() => {});
       break;
     }
   }

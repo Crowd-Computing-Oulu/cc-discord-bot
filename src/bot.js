@@ -140,7 +140,11 @@ async function fetchPastMessages(channel, limit = 20) {
   const raw = await channel.messages.fetch({ limit });
   const msgs = [...raw.values()].reverse();
   const recentBotMsgCount = msgs.filter(m => m.author.id === CLIENT_ID).length;
-  const formatted = msgs.map(m => ({ name: m.author.username, message: m.cleanContent }));
+  // Exclude bot's own messages — those are already in the conversation context (ctx)
+  // and including them here causes the model to re-execute prior tool actions
+  const formatted = msgs
+    .filter(m => m.author.id !== CLIENT_ID)
+    .map(m => ({ name: m.author.username, message: m.cleanContent }));
   return { pastMessages: formatted, recentBotMsgCount };
 }
 
@@ -317,23 +321,17 @@ client.on('messageCreate', async message => {
 
   if (!directMention && !isReplyToBot) {
     let recentMsgs = [];
-    let sissyWasLastSpeaker = false;
     try {
       const recent = await message.channel.messages.fetch({ limit: CONVERSATIONAL_DEPTH + 1 });
       const sorted = [...recent.values()].reverse();
-      // Check if the message immediately before this one was from Sissy
-      const prev = sorted[sorted.length - 2];
-      if (prev && prev.author.id === client.user.id) sissyWasLastSpeaker = true;
       recentMsgs = sorted.map(m => ({ name: m.author.username, message: m.cleanContent }));
     } catch (_) {}
 
-    if (!sissyWasLastSpeaker) {
-      try {
-        const shouldReply = await shouldRespondWithGranite(recentMsgs, message.cleanContent);
-        if (!shouldReply) return;
-      } catch (e) {
-        console.error('Granite turn-taking error:', e.message);
-      }
+    try {
+      const shouldReply = await shouldRespondWithGranite(recentMsgs, message.cleanContent);
+      if (!shouldReply) return;
+    } catch (e) {
+      console.error('Granite turn-taking error:', e.message);
     }
   }
 
