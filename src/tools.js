@@ -847,7 +847,7 @@ async function toolWebSearch({ query, num_results = 5 }) {
     { query, limit: count, scrapeOptions: { formats: ['markdown'] } },
     { headers: { Authorization: `Bearer ${_FIRECRAWL_KEY}`, 'Content-Type': 'application/json' }, timeout: 20000 }
   );
-  const items = res.data?.data ?? [];
+  const items = res.data?.data?.web ?? [];
   if (items.length === 0) return { message: 'No results found', query };
   const results = items.map(r => ({
     title: r.title,
