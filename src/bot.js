@@ -679,12 +679,24 @@ app.post('/email/inbound', async (req, res) => {
 
     if (INBOUND_NOTIFY_CHANNEL) {
       try {
-        const ch = await client.channels.fetch(INBOUND_NOTIFY_CHANNEL);
-        if (ch?.isTextBased()) {
-          const preview = body.slice(0, 200).replace(/\n/g, ' ');
-          await ch.send(`📬 **New email** from **${fromName || fromAddress}**\n**Subject:** ${email.subject}\n> ${preview}${body.length > 200 ? '…' : ''}`);
+        const sender = fromName ? `${fromName} <${fromAddress}>` : fromAddress;
+        const prompt = `You just received an email.\n\nFrom: ${sender}\nSubject: ${email.subject}\n\n${body}\n\nDecide what to do: reply, share it in Discord, generate something, or just acknowledge it. Act on it.`;
+        const response = await respondTo({
+          channelId: INBOUND_NOTIFY_CHANNEL,
+          userId: 'email',
+          input: prompt,
+          discordClient: client,
+        });
+        if (response) {
+          const ch = await client.channels.fetch(INBOUND_NOTIFY_CHANNEL);
+          if (ch?.isTextBased()) {
+            const chunks = splitMessage(`📬 **Email from ${sender}** — *${email.subject}*\n\n${response}`);
+            for (const chunk of chunks) await ch.send(chunk);
+          }
         }
-      } catch (_) {}
+      } catch (e) {
+        console.error('Inbound email AI handler error:', e.message);
+      }
     }
 
     res.status(200).json({ ok: true, id: email.id });
