@@ -37,6 +37,9 @@ function safeUserPath(userId, filePath) {
   return resolved;
 }
 
+const _RESEND_KEY = process.env.RESEND_APIKEY;
+const _RESEND_FROM = process.env.RESEND_FROM || 'Sissy <sissy@cc.szab.eu>';
+
 const _FIRECRAWL_KEY = process.env.FIRECRAWL_APIKEY;
 const _OR_KEY = process.env.OPENROUTER_APIKEY;
 const _OR_HEADERS = {
@@ -157,7 +160,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Search the web using Firecrawl. Returns titles, URLs, and clean page content. Use this to find current information, news, docs, or anything on the web.',
+      description: 'Search the web using Firecrawl. Returns titles, URLs, and clean page content. Cite results inline as [1], [2] etc. and always end your response with the `sources` block verbatim (e.g. "[1] https://...").',
       parameters: {
         type: 'object',
         properties: {
@@ -676,6 +679,59 @@ export const toolDefinitions = [
     },
   },
 
+  // ── Email ──
+  {
+    type: 'function',
+    function: {
+      name: 'send_email',
+      description: 'Send an email to someone. Use for sharing summaries, reminders, paper links, or anything worth emailing. Always confirm the recipient address with the user before sending.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address' },
+          subject: { type: 'string', description: 'Email subject line' },
+          body: { type: 'string', description: 'Email body (plain text or simple HTML)' },
+        },
+        required: ['to', 'subject', 'body'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_emails',
+      description: 'Check the inbox for emails received via the inbound webhook. Returns recent emails with sender, subject, and body. Mark as read after reading if appropriate.',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max emails to return (default 10)' },
+          unread_only: { type: 'boolean', description: 'Only return unread emails (default false)' },
+          mark_read: { type: 'boolean', description: 'Mark returned emails as read (default true)' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_calendar_invite',
+      description: 'Send a calendar invite (.ics) by email. The recipient can open it to add the event to Google Calendar, Outlook, or Apple Calendar. Use for scheduling meetings, deadlines, or events.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address' },
+          title: { type: 'string', description: 'Event title' },
+          start_iso: { type: 'string', description: 'Start datetime in ISO 8601, e.g. 2026-06-20T14:00:00 (Europe/Helsinki)' },
+          end_iso: { type: 'string', description: 'End datetime in ISO 8601, e.g. 2026-06-20T15:00:00 (Europe/Helsinki)' },
+          description: { type: 'string', description: 'Event description or agenda (optional)' },
+          location: { type: 'string', description: 'Location or meeting link (optional)' },
+        },
+        required: ['to', 'title', 'start_iso', 'end_iso'],
+      },
+    },
+  },
+
   // ── Fun / utility ──
   {
     type: 'function',
@@ -768,6 +824,9 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'arxiv_search': return await toolArxivSearch(args);
     case 'semantic_scholar_search': return await toolSemanticScholarSearch(args);
     case 'lookup_paper': return await toolLookupPaper(args);
+    case 'send_email': return await toolSendEmail(args);
+    case 'check_emails': return await toolCheckEmails(args);
+    case 'send_calendar_invite': return await toolSendCalendarInvite(args);
     case 'roll_dice': return await toolRollDice(args, discordClient);
     case 'get_weather': return await toolGetWeather(args, discordClient);
     case 'fs_write': return await toolFsWrite({ ...args, user_id: args.user_id || requestingUserId });
@@ -855,7 +914,8 @@ async function toolWebSearch({ query, num_results = 5 }) {
     snippet: r.description || '',
     content: r.markdown ? r.markdown.slice(0, 2000) : undefined,
   }));
-  return { results, query };
+  const sources = results.map((r, i) => `[${i + 1}] ${r.url}`).join('\n');
+  return { results, sources, query };
 }
 
 async function toolFetchUrl({ url }) {
@@ -1355,6 +1415,83 @@ async function toolLookupPaper({ identifier }) {
   }
 
   return { error: 'Could not identify the paper identifier type. Provide a DOI, arXiv ID, arXiv URL, Semantic Scholar URL, or Google Scholar URL.' };
+}
+
+// ─── Email ────────────────────────────────────────────────────────────────────
+
+async function toolSendEmail({ to, subject, body }) {
+  if (!_RESEND_KEY) return { error: 'RESEND_APIKEY is not set' };
+  const res = await axios.post(
+    'https://api.resend.com/emails',
+    { from: _RESEND_FROM, to, subject, html: body },
+    { headers: { Authorization: `Bearer ${_RESEND_KEY}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+  return { success: true, id: res.data.id, to, subject };
+}
+
+function buildIcs({ title, start_iso, end_iso, description = '', location = '' }) {
+  const fmt = iso => moment.tz(iso, 'Europe/Helsinki').utc().format('YYYYMMDDTHHmmss') + 'Z';
+  const uid = `${Date.now()}@sissy`;
+  const escape = s => (s || '').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Sissy//CC Bot//EN',
+    'METHOD:REQUEST',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${fmt(new Date().toISOString())}`,
+    `DTSTART:${fmt(start_iso)}`,
+    `DTEND:${fmt(end_iso)}`,
+    `SUMMARY:${escape(title)}`,
+    description ? `DESCRIPTION:${escape(description)}` : '',
+    location ? `LOCATION:${escape(location)}` : '',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].filter(Boolean).join('\r\n');
+}
+
+async function toolCheckEmails({ limit = 10, unread_only = false, mark_read = true } = {}) {
+  const { InboundEmail } = db;
+  const where = unread_only ? { read: false } : {};
+  const emails = await InboundEmail.findAll({
+    where,
+    order: [['receivedAt', 'DESC']],
+    limit: Math.min(limit, 50),
+  });
+  if (mark_read && emails.length > 0) {
+    await InboundEmail.update({ read: true }, { where: { id: emails.map(e => e.id) } });
+  }
+  return {
+    count: emails.length,
+    emails: emails.map(e => ({
+      id: e.id,
+      from: e.fromName ? `${e.fromName} <${e.fromAddress}>` : e.fromAddress,
+      subject: e.subject,
+      body: e.body.slice(0, 3000),
+      receivedAt: e.receivedAt,
+      read: e.read,
+    })),
+  };
+}
+
+async function toolSendCalendarInvite({ to, title, start_iso, end_iso, description, location }) {
+  if (!_RESEND_KEY) return { error: 'RESEND_APIKEY is not set' };
+  const ics = buildIcs({ title, start_iso, end_iso, description, location });
+  const startFmt = moment.tz(start_iso, 'Europe/Helsinki').format('ddd D MMM YYYY [at] HH:mm z');
+  const body = `<p>You're invited to: <strong>${title}</strong></p><p>${startFmt}</p>${description ? `<p>${description}</p>` : ''}`;
+  const res = await axios.post(
+    'https://api.resend.com/emails',
+    {
+      from: _RESEND_FROM,
+      to,
+      subject: `Invite: ${title}`,
+      html: body,
+      attachments: [{ filename: 'invite.ics', content: Buffer.from(ics).toString('base64') }],
+    },
+    { headers: { Authorization: `Bearer ${_RESEND_KEY}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+  return { success: true, id: res.data.id, to, title, start: start_iso };
 }
 
 // ─── Fun / utility tools ──────────────────────────────────────────────────────

@@ -61,6 +61,15 @@ const GeneratedImage = sequelize.define('GeneratedImage', {
   createdAt: { type: DataTypes.DATE, allowNull: false },
 });
 
+const InboundEmail = sequelize.define('InboundEmail', {
+  fromAddress: { type: DataTypes.STRING, allowNull: false },
+  fromName: { type: DataTypes.STRING, allowNull: true },
+  subject: { type: DataTypes.STRING, allowNull: false },
+  body: { type: DataTypes.TEXT, allowNull: false },
+  receivedAt: { type: DataTypes.DATE, allowNull: false },
+  read: { type: DataTypes.BOOLEAN, defaultValue: false },
+});
+
 // Persisted conversation turns — used to survive restarts and feed daily compaction
 const ConversationLog = sequelize.define('ConversationLog', {
   channelId: { type: DataTypes.STRING, allowNull: false },
@@ -84,6 +93,7 @@ export default {
   BotMemory,
   ConversationLog,
   GeneratedImage,
+  InboundEmail,
   initialize,
   Op,
 };

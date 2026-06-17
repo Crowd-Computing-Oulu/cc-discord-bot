@@ -3,6 +3,7 @@ import moment from 'moment-timezone';
 import { REST, Routes } from 'discord.js';
 import db from './database.js';
 import { respondTo, respondToDM, shouldRespondWithGranite, scheduleNightlyCompaction } from './ai.js';
+import express from 'express';
 
 const { Reminder, RepeatReminder, ScheduledTask, ChannelSummary, BotMemory, initialize, Op } = db;
 
@@ -651,3 +652,48 @@ client.once(Events.ClientReady, rc => {
 });
 
 client.login(TOKEN);
+
+// ─── Inbound email webhook ────────────────────────────────────────────────────
+
+const INBOUND_PORT = parseInt(process.env.INBOUND_EMAIL_PORT || '3001');
+const INBOUND_NOTIFY_CHANNEL = process.env.INBOUND_EMAIL_CHANNEL_ID;
+
+const app = express();
+app.use(express.json());
+
+app.post('/email/inbound', async (req, res) => {
+  try {
+    const { from, subject, text, html } = req.body;
+    const fromAddress = (typeof from === 'string' ? from : from?.email) || 'unknown';
+    const fromName = typeof from === 'object' ? (from?.name || null) : null;
+    const body = text || html?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || '';
+
+    const email = await db.InboundEmail.create({
+      fromAddress,
+      fromName,
+      subject: subject || '(no subject)',
+      body,
+      receivedAt: new Date(),
+      read: false,
+    });
+
+    if (INBOUND_NOTIFY_CHANNEL) {
+      try {
+        const ch = await client.channels.fetch(INBOUND_NOTIFY_CHANNEL);
+        if (ch?.isTextBased()) {
+          const preview = body.slice(0, 200).replace(/\n/g, ' ');
+          await ch.send(`📬 **New email** from **${fromName || fromAddress}**\n**Subject:** ${email.subject}\n> ${preview}${body.length > 200 ? '…' : ''}`);
+        }
+      } catch (_) {}
+    }
+
+    res.status(200).json({ ok: true, id: email.id });
+  } catch (e) {
+    console.error('Inbound email webhook error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.listen(INBOUND_PORT, () => {
+  console.log(`Inbound email webhook listening on port ${INBOUND_PORT}`);
+});
