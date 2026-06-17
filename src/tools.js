@@ -37,6 +37,7 @@ function safeUserPath(userId, filePath) {
   return resolved;
 }
 
+const _FIRECRAWL_KEY = process.env.FIRECRAWL_APIKEY;
 const _OR_KEY = process.env.OPENROUTER_APIKEY;
 const _OR_HEADERS = {
   Authorization: `Bearer ${_OR_KEY}`,
@@ -156,7 +157,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Search the web using DuckDuckGo. Returns titles, URLs, snippets.',
+      description: 'Search the web using Firecrawl. Returns titles, URLs, and clean page content. Use this to find current information, news, docs, or anything on the web.',
       parameters: {
         type: 'object',
         properties: {
@@ -171,7 +172,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'fetch_url',
-      description: 'Fetch and read the text content of a URL.',
+      description: 'Scrape and read the clean markdown content of a URL using Firecrawl. Much better than raw HTML fetching — returns structured text, tables, and content without noise.',
       parameters: {
         type: 'object',
         properties: {
@@ -841,33 +842,30 @@ async function toolCancelReminder({ reminder_id, type }) {
 
 async function toolWebSearch({ query, num_results = 5 }) {
   const count = Math.min(Math.max(1, num_results), 10);
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const res = await axios.get(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SissyBot/1.0)' },
-    timeout: 10000,
-  });
-  const $ = cheerio.load(res.data);
-  const results = [];
-  $('.result').slice(0, count).each((_, el) => {
-    const title = $(el).find('.result__title').text().trim();
-    const snippet = $(el).find('.result__snippet').text().trim();
-    const href = $(el).find('.result__url').text().trim();
-    if (title) results.push({ title, url: href, snippet });
-  });
-  if (results.length === 0) return { message: 'No results found', query };
+  const res = await axios.post(
+    'https://api.firecrawl.dev/v2/search',
+    { query, limit: count, scrapeOptions: { formats: ['markdown'] } },
+    { headers: { Authorization: `Bearer ${_FIRECRAWL_KEY}`, 'Content-Type': 'application/json' }, timeout: 20000 }
+  );
+  const items = res.data?.data ?? [];
+  if (items.length === 0) return { message: 'No results found', query };
+  const results = items.map(r => ({
+    title: r.title,
+    url: r.url,
+    snippet: r.description || '',
+    content: r.markdown ? r.markdown.slice(0, 2000) : undefined,
+  }));
   return { results, query };
 }
 
 async function toolFetchUrl({ url }) {
-  const res = await axios.get(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SissyBot/1.0)' },
-    timeout: 15000,
-    responseType: 'text',
-  });
-  const $ = cheerio.load(res.data);
-  $('script, style, nav, footer, header, aside').remove();
-  const text = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 8000);
-  return { url, content: text };
+  const res = await axios.post(
+    'https://api.firecrawl.dev/v2/scrape',
+    { url, formats: ['markdown'] },
+    { headers: { Authorization: `Bearer ${_FIRECRAWL_KEY}`, 'Content-Type': 'application/json' }, timeout: 20000 }
+  );
+  const content = res.data?.data?.markdown ?? res.data?.markdown ?? '';
+  return { url, content: content.slice(0, 10000) };
 }
 
 async function toolReadFile({ url, filename }) {

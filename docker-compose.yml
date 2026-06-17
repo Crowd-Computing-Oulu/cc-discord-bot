@@ -9,6 +9,7 @@ services:
       - OPENAI_APIKEY=${OPENAI_APIKEY}
       - OPENAI_ORG=${OPENAI_ORG}
       - OPENAI_PROJECT=${OPENAI_PROJECT}
+      - FIRECRAWL_APIKEY=${FIRECRAWL_APIKEY}
     volumes:
       - db-data:/app/data
 
