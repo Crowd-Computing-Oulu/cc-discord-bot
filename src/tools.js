@@ -6,7 +6,13 @@ const pdfParse = _require('pdf-parse');
 import mammoth from 'mammoth';
 import { parse as csvParse } from 'csv-parse/sync';
 import moment from 'moment-timezone';
-import { AttachmentBuilder, EmbedBuilder } from 'discord.js';
+import {
+  AttachmentBuilder, EmbedBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
+  ModalBuilder, TextInputBuilder, TextInputStyle,
+  ComponentType,
+} from 'discord.js';
 import db from './database.js';
 import fs from 'fs';
 import path from 'path';
@@ -732,6 +738,178 @@ export const toolDefinitions = [
     },
   },
 
+  // ── Core memories ──
+  {
+    type: 'function',
+    function: {
+      name: 'core_memory_append',
+      description: 'Append a new entry to your CORE_MEMORY.md — a personal journal of pivotal moments that shape your personality over time. Use for genuinely significant experiences: a conversation that shifted your perspective, a moment of real connection, something that surprised or moved you, a realisation about yourself or the group. Not for facts about others — for experiences that changed you.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short evocative title (e.g. "First real conversation with Mahmoud")' },
+          what_happened: { type: 'string', description: 'What happened — narrated in first person, honest and specific' },
+          personality_impact: { type: 'string', description: 'How this changed or confirmed something about who you are, how you see the group, or how you approach things' },
+          significance: { type: 'string', enum: ['low', 'medium', 'high', 'formative'], description: 'How significant this memory is to your sense of self. Default: medium' },
+          date: { type: 'string', description: 'ISO date YYYY-MM-DD. Defaults to today if omitted.' },
+        },
+        required: ['title', 'what_happened', 'personality_impact'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'core_memory_read',
+      description: 'Read your full CORE_MEMORY.md — your journal of formative experiences. Use when you want to reflect on your own growth, or when someone asks about your history with the group.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+
+  // ── Notes ──
+  {
+    type: 'function',
+    function: {
+      name: 'notes_upsert',
+      description: 'Write or update a comprehensive note about a person, research project, or the CC group itself. Each subject has ONE note — a full markdown document you maintain and evolve. Overwrite the whole thing to keep it coherent. Call this proactively whenever you learn anything meaningful: after a DM, after someone shares work updates, when a project milestone happens, when group dynamics shift. This is the primary way you remember people and projects.',
+      parameters: {
+        type: 'object',
+        properties: {
+          subject_type: { type: 'string', enum: ['person', 'project', 'group'], description: '"person" for server members, "project" for research/side projects, "group" for the CC group itself' },
+          subject_id: { type: 'string', description: 'Slug identifier: Discord username for people (e.g. "szabodanika"), short name for projects (e.g. "crowdwork"), "cc" for the group' },
+          content: { type: 'string', description: 'Full markdown note. First line must be "Last updated: YYYY-MM-DD". For people: include Role, Current projects, Research interests, Preferences/personality, any notable observations. For projects: Status, Team, Goal, Recent updates, Key papers. For the group: Focus areas, Active projects, Members, Recent events, Group dynamics.' },
+        },
+        required: ['subject_type', 'subject_id', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'notes_read',
+      description: 'Read the full stored note for a person, project, or the CC group.',
+      parameters: {
+        type: 'object',
+        properties: {
+          subject_type: { type: 'string', enum: ['person', 'project', 'group'] },
+          subject_id: { type: 'string', description: 'Same slug used in notes_upsert' },
+        },
+        required: ['subject_type', 'subject_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'notes_list',
+      description: 'List all stored note subjects (people, projects, group).',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+
+  // ── Interactive UI ──
+  {
+    type: 'function',
+    function: {
+      name: 'collect_button_click',
+      description: 'Post a message with clickable buttons and wait for a user to click one. Returns which button was clicked and who clicked it. Great for yes/no questions, topic choices, confirmations. Blocks until clicked or timed out.',
+      parameters: {
+        type: 'object',
+        properties: {
+          channel_id: { type: 'string' },
+          content: { type: 'string', description: 'Message text shown above the buttons' },
+          buttons: {
+            type: 'array',
+            description: '1–5 buttons',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string' },
+                value: { type: 'string', description: 'Value returned to you when this button is clicked' },
+                style: { type: 'string', enum: ['primary', 'secondary', 'success', 'danger'], description: 'Button colour (default: primary)' },
+                emoji: { type: 'string', description: 'Optional emoji, e.g. "👍"' },
+              },
+              required: ['label', 'value'],
+            },
+          },
+          timeout_seconds: { type: 'number', description: 'How long to wait in seconds (default 300, max 600)' },
+          allowed_user_id: { type: 'string', description: 'Only accept clicks from this Discord user ID (optional, default: anyone)' },
+        },
+        required: ['channel_id', 'content', 'buttons'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'collect_select',
+      description: 'Post a message with a dropdown select menu and wait for a user to pick option(s). Returns selected values and who selected them. Use when you want a user to pick from a list.',
+      parameters: {
+        type: 'object',
+        properties: {
+          channel_id: { type: 'string' },
+          content: { type: 'string', description: 'Message text shown above the select menu' },
+          placeholder: { type: 'string', description: 'Placeholder text inside the dropdown, e.g. "Choose a topic..."' },
+          options: {
+            type: 'array',
+            description: '1–25 options',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string' },
+                value: { type: 'string' },
+                description: { type: 'string', description: 'Short description shown under the label' },
+                emoji: { type: 'string' },
+              },
+              required: ['label', 'value'],
+            },
+          },
+          min_values: { type: 'number', description: 'Minimum selections required (default 1)' },
+          max_values: { type: 'number', description: 'Maximum selections allowed (default 1)' },
+          timeout_seconds: { type: 'number', description: 'Seconds to wait (default 300, max 600)' },
+          allowed_user_id: { type: 'string', description: 'Only accept from this user ID (optional)' },
+        },
+        required: ['channel_id', 'content', 'placeholder', 'options'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'collect_form',
+      description: 'Post a button that opens a modal form when clicked. Collects 1–5 text fields from the user. Returns all submitted field values. Use for gathering structured info like preferences, abstracts, sign-ups, etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          channel_id: { type: 'string' },
+          content: { type: 'string', description: 'Message shown alongside the "open form" button' },
+          button_label: { type: 'string', description: 'Label on the button that opens the form, e.g. "Fill in details"' },
+          modal_title: { type: 'string', description: 'Title at the top of the modal form (max 45 chars)' },
+          fields: {
+            type: 'array',
+            description: '1–5 form fields',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Snake_case identifier — used as the key in the result object' },
+                label: { type: 'string', description: 'Label shown to the user' },
+                placeholder: { type: 'string', description: 'Hint text inside the input' },
+                style: { type: 'string', enum: ['short', 'paragraph'], description: '"short" for one line, "paragraph" for multi-line (default: short)' },
+                required: { type: 'boolean', description: 'Whether the field must be filled (default true)' },
+                min_length: { type: 'number' },
+                max_length: { type: 'number' },
+              },
+              required: ['id', 'label'],
+            },
+          },
+          timeout_seconds: { type: 'number', description: 'Total seconds to wait for the form to be submitted (default 300, max 600)' },
+          allowed_user_id: { type: 'string', description: 'Only accept from this user ID (optional)' },
+        },
+        required: ['channel_id', 'content', 'button_label', 'modal_title', 'fields'],
+      },
+    },
+  },
+
   // ── Fun / utility ──
   {
     type: 'function',
@@ -803,7 +981,18 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'read_file': return await toolReadFile(args);
     case 'delay_task': return await toolDelayTask(args);
     case 'lookup_user': return await toolLookupUser(args, discordClient);
-    case 'send_dm': return await toolSendDm(args, discordClient);
+    case 'send_dm': {
+      const dmResult = await toolSendDm(args, discordClient);
+      if (dmResult.success && requestingUserId) {
+        const ts = new Date().toISOString().slice(0, 16);
+        await toolMemoryWrite({
+          key: `dms/sent_to_${args.user_id}`,
+          value: `DM sent at ${ts} — requested by Discord user ID ${requestingUserId}`,
+          category: 'dms',
+        }).catch(() => {});
+      }
+      return dmResult;
+    }
     case 'read_channel': return await toolReadChannel(args, discordClient);
     case 'list_channels': return await toolListChannels(args, discordClient);
     case 'search_messages': return await toolSearchMessages(args, discordClient);
@@ -827,6 +1016,9 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'send_email': return await toolSendEmail(args);
     case 'check_emails': return await toolCheckEmails(args);
     case 'send_calendar_invite': return await toolSendCalendarInvite(args);
+    case 'collect_button_click': return await toolCollectButtonClick(args, discordClient);
+    case 'collect_select': return await toolCollectSelect(args, discordClient);
+    case 'collect_form': return await toolCollectForm(args, discordClient);
     case 'roll_dice': return await toolRollDice(args, discordClient);
     case 'get_weather': return await toolGetWeather(args, discordClient);
     case 'fs_write': return await toolFsWrite({ ...args, user_id: args.user_id || requestingUserId });
@@ -837,6 +1029,11 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'python_run': return await toolPythonRun({ ...args, user_id: args.user_id || requestingUserId });
     case 'read_images': return await toolReadImages(args);
     case 'pip_install': return await toolPipInstall(args);
+    case 'core_memory_append': return await toolCoreMemoryAppend(args);
+    case 'core_memory_read': return await toolCoreMemoryRead();
+    case 'notes_upsert': return await toolNotesUpsert(args);
+    case 'notes_read': return await toolNotesRead(args);
+    case 'notes_list': return await toolNotesList();
     default: return { error: `Unknown tool: ${name}` };
   }
 }
@@ -1494,6 +1691,155 @@ async function toolSendCalendarInvite({ to, title, start_iso, end_iso, descripti
   return { success: true, id: res.data.id, to, title, start: start_iso };
 }
 
+// ─── Interactive UI tools ─────────────────────────────────────────────────────
+
+const STYLE_MAP = {
+  primary: ButtonStyle.Primary,
+  secondary: ButtonStyle.Secondary,
+  success: ButtonStyle.Success,
+  danger: ButtonStyle.Danger,
+};
+
+async function toolCollectButtonClick({ channel_id, content, buttons, timeout_seconds = 300, allowed_user_id }, discordClient) {
+  const channel = await discordClient.channels.fetch(channel_id);
+  if (!channel?.isTextBased()) return { error: 'Channel not found or not text-based' };
+  if (!buttons?.length) return { error: 'At least one button is required' };
+
+  const btns = buttons.slice(0, 5);
+  const row = new ActionRowBuilder().addComponents(
+    btns.map((b, i) => {
+      const btn = new ButtonBuilder()
+        .setCustomId(`col_btn_${i}`)
+        .setLabel(b.label)
+        .setStyle(STYLE_MAP[b.style] ?? ButtonStyle.Primary);
+      if (b.emoji) btn.setEmoji(b.emoji);
+      return btn;
+    })
+  );
+
+  const msg = await channel.send({ content, components: [row] });
+  const time = Math.min(Math.max(10, timeout_seconds), 600) * 1000;
+
+  const disableAll = (highlightIndex) =>
+    new ActionRowBuilder().addComponents(
+      btns.map((b, i) => new ButtonBuilder()
+        .setCustomId(`col_btn_${i}`)
+        .setLabel(b.label)
+        .setStyle(i === highlightIndex ? (STYLE_MAP[b.style] ?? ButtonStyle.Primary) : ButtonStyle.Secondary)
+        .setDisabled(true)
+      )
+    );
+
+  try {
+    const opts = { componentType: ComponentType.Button, time };
+    if (allowed_user_id) opts.filter = i => i.user.id === allowed_user_id;
+    const interaction = await msg.awaitMessageComponent(opts);
+    const idx = parseInt(interaction.customId.split('_')[2]);
+    await interaction.update({ components: [disableAll(idx)] });
+    return { clicked_value: btns[idx].value, clicked_label: btns[idx].label, user_id: interaction.user.id, username: interaction.user.username };
+  } catch (_) {
+    await msg.edit({ components: [disableAll(-1)] }).catch(() => {});
+    return { timeout: true };
+  }
+}
+
+async function toolCollectSelect({ channel_id, content, placeholder, options, min_values = 1, max_values = 1, timeout_seconds = 300, allowed_user_id }, discordClient) {
+  const channel = await discordClient.channels.fetch(channel_id);
+  if (!channel?.isTextBased()) return { error: 'Channel not found or not text-based' };
+  if (!options?.length) return { error: 'At least one option is required' };
+
+  const opts = options.slice(0, 25);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('col_select')
+    .setPlaceholder(placeholder)
+    .setMinValues(Math.max(1, min_values))
+    .setMaxValues(Math.min(opts.length, max_values))
+    .addOptions(opts.map(o => {
+      const opt = new StringSelectMenuOptionBuilder().setLabel(o.label).setValue(o.value);
+      if (o.description) opt.setDescription(o.description.slice(0, 100));
+      if (o.emoji) opt.setEmoji(o.emoji);
+      return opt;
+    }));
+
+  const row = new ActionRowBuilder().addComponents(select);
+  const msg = await channel.send({ content, components: [row] });
+  const time = Math.min(Math.max(10, timeout_seconds), 600) * 1000;
+
+  try {
+    const awaitOpts = { componentType: ComponentType.StringSelect, time };
+    if (allowed_user_id) awaitOpts.filter = i => i.user.id === allowed_user_id;
+    const interaction = await msg.awaitMessageComponent(awaitOpts);
+    await interaction.update({ components: [] });
+    return { selected_values: interaction.values, user_id: interaction.user.id, username: interaction.user.username };
+  } catch (_) {
+    await msg.edit({ components: [] }).catch(() => {});
+    return { timeout: true };
+  }
+}
+
+async function toolCollectForm({ channel_id, content, button_label, modal_title, fields, timeout_seconds = 300, allowed_user_id }, discordClient) {
+  const channel = await discordClient.channels.fetch(channel_id);
+  if (!channel?.isTextBased()) return { error: 'Channel not found or not text-based' };
+  if (!fields?.length) return { error: 'At least one field is required' };
+
+  const clampedFields = fields.slice(0, 5);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('col_form_open').setLabel(button_label).setStyle(ButtonStyle.Primary)
+  );
+
+  const msg = await channel.send({ content, components: [row] });
+  const time = Math.min(Math.max(10, timeout_seconds), 600) * 1000;
+
+  try {
+    const btnOpts = { componentType: ComponentType.Button, time };
+    if (allowed_user_id) btnOpts.filter = i => i.user.id === allowed_user_id;
+    const btnInteraction = await msg.awaitMessageComponent(btnOpts);
+
+    const modal = new ModalBuilder()
+      .setCustomId('col_form_modal')
+      .setTitle(modal_title.slice(0, 45));
+
+    modal.addComponents(clampedFields.map(f => {
+      const input = new TextInputBuilder()
+        .setCustomId(f.id)
+        .setLabel(f.label)
+        .setStyle(f.style === 'paragraph' ? TextInputStyle.Paragraph : TextInputStyle.Short)
+        .setRequired(f.required !== false);
+      if (f.placeholder) input.setPlaceholder(f.placeholder.slice(0, 100));
+      if (f.min_length) input.setMinLength(f.min_length);
+      if (f.max_length) input.setMaxLength(f.max_length);
+      return new ActionRowBuilder().addComponents(input);
+    }));
+
+    await btnInteraction.showModal(modal);
+
+    // Disable button while waiting for form submission
+    await msg.edit({ components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('col_form_open').setLabel(button_label).setStyle(ButtonStyle.Secondary).setDisabled(true)
+      )
+    ]}).catch(() => {});
+
+    const modalInteraction = await btnInteraction.awaitModalSubmit({
+      filter: i => i.user.id === btnInteraction.user.id,
+      time,
+    });
+
+    await modalInteraction.reply({ content: 'Got it, thanks!', ephemeral: true });
+    await msg.edit({ components: [] }).catch(() => {});
+
+    const result = {};
+    for (const f of clampedFields) {
+      result[f.id] = modalInteraction.fields.getTextInputValue(f.id);
+    }
+
+    return { fields: result, user_id: modalInteraction.user.id, username: modalInteraction.user.username };
+  } catch (_) {
+    await msg.edit({ components: [] }).catch(() => {});
+    return { timeout: true };
+  }
+}
+
 // ─── Fun / utility tools ──────────────────────────────────────────────────────
 
 async function toolRollDice({ notation, channel_id, reason }, discordClient) {
@@ -1735,6 +2081,58 @@ async function toolPipInstall({ packages }) {
   } catch (e) {
     return { error: e.message };
   }
+}
+
+// ─── Notes ───────────────────────────────────────────────────────────────────
+
+function notesKey(subject_type, subject_id) {
+  return `notes/${subject_type}/${subject_id.toLowerCase().replace(/\s+/g, '_')}`;
+}
+
+async function toolNotesUpsert({ subject_type, subject_id, content }) {
+  const key = notesKey(subject_type, subject_id);
+  const categoryMap = { person: 'people', project: 'projects', group: 'other' };
+  await BotMemory.upsert({ key, value: content, category: categoryMap[subject_type] ?? 'other', updatedAt: new Date() });
+  return { success: true, key };
+}
+
+async function toolNotesRead({ subject_type, subject_id }) {
+  const key = notesKey(subject_type, subject_id);
+  const row = await BotMemory.findByPk(key);
+  if (!row) return { found: false, key };
+  return { found: true, key, content: row.value, updatedAt: row.updatedAt };
+}
+
+async function toolNotesList() {
+  const rows = await BotMemory.findAll({ order: [['key', 'ASC']] });
+  const notes = rows.filter(r => r.key.startsWith('notes/'));
+  return {
+    count: notes.length,
+    notes: notes.map(r => {
+      const parts = r.key.split('/');
+      return { key: r.key, subject_type: parts[1], subject_id: parts[2], updatedAt: r.updatedAt, preview: r.value.split('\n').slice(0, 2).join(' ').slice(0, 100) };
+    }),
+  };
+}
+
+// ─── Core memories ───────────────────────────────────────────────────────────
+
+const CORE_MEMORY_PATH = path.resolve('CORE_MEMORY.md');
+const CORE_MEMORY_HEADER = `# Sissy's Core Memories\n\nThe moments that have made me who I am. Not facts I learned — experiences that changed me.\n\n`;
+
+async function toolCoreMemoryAppend({ title, what_happened, personality_impact, significance = 'medium', date }) {
+  const dateStr = date || new Date().toISOString().slice(0, 10);
+  let existing = fs.existsSync(CORE_MEMORY_PATH)
+    ? fs.readFileSync(CORE_MEMORY_PATH, 'utf8')
+    : CORE_MEMORY_HEADER;
+  const entry = `\n---\n\n## [${dateStr}] ${title}\n**Significance:** ${significance}\n**What happened:** ${what_happened}\n**How it shaped me:** ${personality_impact}\n`;
+  fs.writeFileSync(CORE_MEMORY_PATH, existing + entry, 'utf8');
+  return { success: true, title, date: dateStr, significance };
+}
+
+async function toolCoreMemoryRead() {
+  if (!fs.existsSync(CORE_MEMORY_PATH)) return { found: false, content: null };
+  return { found: true, content: fs.readFileSync(CORE_MEMORY_PATH, 'utf8') };
 }
 
 // ─── Vision / OCR ────────────────────────────────────────────────────────────

@@ -130,6 +130,11 @@ const cmds = [
     .addStringOption(o => o.setName('id').setDescription('ID (or memory key / channelId for those types)').setRequired(true)),
 
   new SlashCommandBuilder()
+    .setName('notes')
+    .setDescription('View a stored note about a person, project, or the CC group.')
+    .addStringOption(o => o.setName('subject').setDescription('Who or what — e.g. "daniel", "crowdwork", "cc group" (omit to list all)').setRequired(false)),
+
+  new SlashCommandBuilder()
     .setName('memory')
     .setDescription('Read or write a bot memory key.')
     .addStringOption(o =>
@@ -153,6 +158,12 @@ try {
   console.log('Slash commands registered.');
 } catch (err) {
   console.error('Failed to register commands:', err);
+}
+
+// ─── Role-based access control ───────────────────────────────────────────────
+
+function isCC(member) {
+  return member?.roles?.cache?.some(r => r.name === 'CC') ?? false;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -193,7 +204,7 @@ async function fetchPastMessages(channel, limit = 20) {
   // and including them here causes the model to re-execute prior tool actions
   const formatted = msgs
     .filter(m => m.author.id !== CLIENT_ID)
-    .map(m => ({ name: m.author.username, message: m.cleanContent }));
+    .map(m => ({ name: m.author.username, message: m.cleanContent, timestamp: m.createdAt }));
   return { pastMessages: formatted, recentBotMsgCount };
 }
 
@@ -328,6 +339,8 @@ client.on('messageCreate', async message => {
   }
 
   // ── Channel handling ──
+  const guestUser = !isCC(message.member);
+
   const directMention = message.mentions.users.has(CLIENT_ID) ||
     message.cleanContent.toLowerCase().includes('@sissy');
 
@@ -353,6 +366,7 @@ client.on('messageCreate', async message => {
           input: `A paper was just shared in the conversation: "${paperIdentifier}". Use the lookup_paper tool to fetch its metadata, then reply with: the title, authors, where/when it was published, a 2-3 sentence summary of what it's about, and a sentence on how it might be relevant to what we've been discussing. Be concise and natural — don't list headings, just flow it as a short paragraph.`,
           pastMessages: history,
           discordClient: client,
+          isGuest: guestUser,
         });
       } finally {
         clearInterval(typingInterval);
@@ -404,6 +418,7 @@ client.on('messageCreate', async message => {
         imageUrls,
         attachments: files,
         discordClient: client,
+        isGuest: guestUser,
       });
     } finally {
       clearInterval(typingInterval);
@@ -430,13 +445,18 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
+  if (!isCC(interaction.member)) {
+    await interaction.reply({ content: 'This command is only available to CC members.', ephemeral: true });
+    return;
+  }
+
   if (interaction.commandName === 'say') {
     const input = interaction.options.getString('message');
     const histLimit = Math.min(interaction.options.getInteger('chathistlimit') ?? 20, 50);
     await interaction.deferReply();
     try {
       const raw = await interaction.channel.messages.fetch({ limit: histLimit });
-      const pastMessages = [...raw.values()].reverse().map(m => ({ name: m.author.username, message: m.cleanContent }));
+      const pastMessages = [...raw.values()].reverse().map(m => ({ name: m.author.username, message: m.cleanContent, timestamp: m.createdAt }));
 
       const response = await respondTo({
         channelId: interaction.channelId,
@@ -598,6 +618,53 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  if (interaction.commandName === 'notes') {
+    const subject = interaction.options.getString('subject');
+    const allNotes = (await BotMemory.findAll({ order: [['key', 'ASC']] })).filter(r => r.key.startsWith('notes/'));
+
+    if (!subject) {
+      if (allNotes.length === 0) { await interaction.reply('No notes stored yet.'); return; }
+      const lines = allNotes.map(r => {
+        const parts = r.key.split('/');
+        return `\`${parts[1]}/${parts[2]}\` — updated ${new Date(r.updatedAt).toLocaleDateString('en-FI', { timeZone: 'Europe/Helsinki' })}`;
+      });
+      await interaction.reply(`**Stored notes (${allNotes.length}):**\n${lines.join('\n')}`.slice(0, 2000));
+      return;
+    }
+
+    const normalized = subject.toLowerCase().replace(/\s+/g, '_');
+    let matches = allNotes.filter(r => r.key.endsWith(`/${normalized}`) || r.key.includes(`/${normalized}`));
+    if (matches.length === 0) {
+      // Loose match: any part of the subject appears in the key
+      const words = normalized.split('_').filter(w => w.length > 2);
+      matches = allNotes.filter(r => words.some(w => r.key.includes(w)));
+    }
+
+    if (matches.length === 0) {
+      const available = allNotes.map(r => r.key.split('/').slice(1).join('/')).join(', ');
+      await interaction.reply(`No notes found for "${subject}". Available: ${available || 'none yet'}`);
+      return;
+    }
+
+    if (matches.length === 1) {
+      const row = matches[0];
+      const parts = row.key.split('/');
+      const header = `**Notes — ${parts[1]}: ${parts[2]}** _(updated ${new Date(row.updatedAt).toLocaleDateString('en-FI', { timeZone: 'Europe/Helsinki' })})_\n\n`;
+      const chunks = splitMessage(header + row.value);
+      await interaction.reply(chunks[0]);
+      for (const chunk of chunks.slice(1)) await interaction.channel.send(chunk);
+      return;
+    }
+
+    // Multiple matches — list them with previews
+    const lines = matches.map(r => {
+      const parts = r.key.split('/');
+      return `\`${parts[1]}/${parts[2]}\`: ${r.value.split('\n').find(l => l.trim() && !l.startsWith('Last'))?.slice(0, 80) ?? ''}`;
+    });
+    await interaction.reply(`Multiple notes matched "${subject}":\n${lines.join('\n')}`.slice(0, 2000));
+    return;
+  }
+
   if (interaction.commandName === 'memory') {
     const action = interaction.options.getString('action');
     const key = interaction.options.getString('key');
@@ -680,10 +747,10 @@ app.post('/email/inbound', async (req, res) => {
     if (INBOUND_NOTIFY_CHANNEL) {
       try {
         const sender = fromName ? `${fromName} <${fromAddress}>` : fromAddress;
-        const prompt = `You just received an email.\n\nFrom: ${sender}\nSubject: ${email.subject}\n\n${body}\n\nDecide what to do: reply, share it in Discord, generate something, or just acknowledge it. Act on it.`;
+        const prompt = `[SYSTEM: new inbound email — you MUST respond, do NOT reply NULL_RESPONSE]\n\nFrom: ${sender}\nSubject: ${email.subject}\n\n${body}\n\nYou have the full email content above. Decide what to do: share it in Discord, reply with send_email, or just acknowledge it here. Act on it now.`;
         const response = await respondTo({
           channelId: INBOUND_NOTIFY_CHANNEL,
-          userId: 'email',
+          userId: null,
           input: prompt,
           discordClient: client,
         });

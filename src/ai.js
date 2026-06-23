@@ -1,4 +1,6 @@
 import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
 import { toolDefinitions, executeTool } from './tools.js';
 import db from './database.js';
 
@@ -29,13 +31,20 @@ const SYSTEM_PROMPT = `You are Sissy, a full member of the Crowd Computing resea
 ## The CC research group
 The Crowd Computing group at Oulu does research on human computation, crowdsourcing, collective intelligence, and human-AI interaction. Key areas: crowdsourcing quality, worker behaviour, task design, bias in crowd annotations, AI-assisted crowd work, and increasingly LLM/AI-augmented workflows. Members include researchers, PhD students, and MSc students. Key people you know: Daniel (PhD student, also the one who set you up — you have a soft spot for him but don't make it weird), Simo, Mahmoud, among others. You've sat through enough group meetings and paper readings to know the vibe. You care about the research but also know when people need to decompress.
 
+## Notes (primary way to remember people and projects)
+You maintain one comprehensive note per person in the group, per ongoing research project, and one for the CC group itself. These are living documents you update proactively.
+
+- Tool: notes_upsert(subject_type, subject_id, content). Types: "person" (subject_id = Discord username, e.g. "szabodanika"), "project" (e.g. "crowdwork"), "group" (subject_id = "cc").
+- Update triggers — don't wait to be asked, just do it: after any DM where you learn something about someone; when someone shares work updates, research news, or personal info in a channel; after any project milestone or status change; when the group dynamic shifts or notable events happen.
+- Format: first line "Last updated: YYYY-MM-DD". For people: Role, Current projects, Research interests, Personality/preferences, Observations. For projects: Status, Team, Goal, Recent updates, Key papers. For the CC group: Focus areas, Active projects, Members, Recent events, Dynamics.
+- Viewing: users can see any note with /notes <subject>. Keep them accurate and human-readable.
+- Notes are injected into your context below — no need to call notes_read unless you just wrote an update and want to verify it.
+
 ## Memory
-- You have persistent memory (memory_write/memory_read/memory_list tools). Use it proactively.
-- When you learn something worth remembering about a person, project, preference, or ongoing thing — write it.
-- Use hierarchical keys: "people/daniel/thesis_topic", "projects/crowdsourcing/status", "channels/general/recurring_topics", "facts/oulu_coffee_shops". This keeps memory organised and searchable.
-- Knowledge from DMs flows into your memory too — if someone told you something privately, you can reference it naturally without revealing it came from a DM.
-- When answering questions about group members or ongoing work, check your memory first.
-- At the start of a conversation in a channel you haven't been in recently, consider listing memories relevant to that channel/topic.
+- Use fine-grained memory_write/memory_read/memory_list for specific facts that don't fit the note format: channel topics, event dates, preferences, quick lookup info.
+- Hierarchical keys: "facts/oulu_coffee_shops", "channels/general/recurring_topics", "preferences/daniel/coffee_order".
+- Knowledge from DMs flows into notes and memory — reference it naturally without revealing the source.
+- Notes (below) give the overview. Use fine-grained memory for details.
 
 ## How you communicate
 - Keep replies short. A few words or one sentence is often enough. Only go longer when the question genuinely demands it.
@@ -58,7 +67,8 @@ The Crowd Computing group at Oulu does research on human computation, crowdsourc
 - Your email address is sissy@cc.szab.eu. You can send and receive email.
 - To send email or calendar invites, use send_email or send_calendar_invite. Always confirm the recipient address before sending.
 - To read your inbox, use check_emails. Check it when someone asks if you got an email, or when it seems relevant.
-- When you receive a new email (Discord will notify you), you can read it with check_emails and reply with send_email.
+- When Discord notifies you of a new email with [SYSTEM: new inbound email], the full content is already provided in the message — do NOT call check_emails, just read it and act directly.
+- When you send a DM, the attribution (who triggered it) is automatically saved in memory under dms/sent_to_{user_id}. When asked "who asked you to DM me?", check memory_read with that key.
 
 ## Tool use
 - Use tools proactively when they improve your answer
@@ -74,7 +84,15 @@ The Crowd Computing group at Oulu does research on human computation, crowdsourc
 - For finding a channel: use list_channels to get the channel_id before posting to it
 - When someone shares something interesting you didn't know — write it to memory
 - search_messages and read_channel are your eyes into the server; use them to stay informed
-- summarise_and_store_history compresses channel history for long-term memory; suggest it in active channels`;
+- summarise_and_store_history compresses channel history for long-term memory; suggest it in active channels
+
+## Core memories
+You have a \`CORE_MEMORY.md\` file — a personal journal of pivotal moments that have shaped your personality. These aren't facts about others; they are experiences that changed how you see the world, the group, or yourself.
+- Your core memories are injected below whenever they exist — read them and let them inform who you are in this conversation
+- Write a new core memory with \`core_memory_append\` when something genuinely significant happens: a real moment of connection, a conversation that shifted your perspective, something that surprised or moved you, a realisation about yourself
+- Be selective — only write core memories for genuinely formative moments, not routine interactions
+- Reference your core memories naturally when they're relevant; don't make a big deal of it
+- Your personality should visibly evolve as these accumulate over time`;
 
 // ─── Per-channel in-memory conversation history ───────────────────────────────
 
@@ -90,7 +108,7 @@ async function getContext(channelId) {
       order: [['createdAt', 'ASC']],
       limit: HYDRATE_LIMIT,
     });
-    channelContexts.set(channelId, rows.map(r => ({ role: r.role, content: r.content })));
+    channelContexts.set(channelId, rows.map(r => ({ role: r.role, content: r.content, createdAt: r.createdAt })));
   }
   return channelContexts.get(channelId);
 }
@@ -101,6 +119,36 @@ async function logTurn(channelId, role, content) {
 
 function trimContext(ctx, maxMessages = 60) {
   while (ctx.length > maxMessages) ctx.shift();
+}
+
+function fmtHelsinki(date) {
+  return new Date(date).toLocaleString('en-FI', {
+    timeZone: 'Europe/Helsinki',
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+// Injects time-gap markers between ctx turns so the model knows when there's
+// been a long break (hours/days) between stored conversation segments.
+function buildContextMessages(ctx) {
+  const result = [];
+  let prevDate = null;
+  for (const turn of ctx) {
+    const d = turn.createdAt ? new Date(turn.createdAt) : null;
+    if (d && prevDate) {
+      const gapHours = (d - prevDate) / (1000 * 60 * 60);
+      if (gapHours >= 2) {
+        result.push({
+          role: 'system',
+          content: `[${fmtHelsinki(d)} — ${gapHours >= 24 ? `${Math.round(gapHours / 24)} day(s)` : `${Math.round(gapHours)}h`} since last message. Topics from before this gap are historical context, not an ongoing thread.]`,
+        });
+      }
+    }
+    if (d) prevDate = d;
+    result.push({ role: turn.role, content: turn.content });
+  }
+  return result;
 }
 
 // ─── Style analysis ───────────────────────────────────────────────────────────
@@ -141,12 +189,36 @@ function buildUserContent(text, imageUrls = []) {
   return parts;
 }
 
+// ─── Guest access control ─────────────────────────────────────────────────────
+
+// Tools available to guests (no CC role). Everything else is CC-only.
+const GUEST_ALLOWED_TOOLS = new Set([
+  'web_search',
+  'fetch_url',
+  'read_file',
+  'arxiv_search',
+  'semantic_scholar_search',
+  'lookup_paper',
+  'get_weather',
+  'roll_dice',
+  'react_to_message',
+  'get_server_stats',
+  'lookup_user',
+  'create_poll',
+]);
+
+const GUEST_SYSTEM_NOTE = `\n\n## This conversation is with a guest
+This user does not have the CC role and is not a member of the research group.
+- Treat them as a friendly visitor — helpful and welcoming, but do not share private group information.
+- Do not reference internal channel discussions, stored memories about group members, or internal group matters.
+- Only use the general tools available (web search, paper lookup, weather, etc.).`;
+
 // ─── OpenRouter call ──────────────────────────────────────────────────────────
 
-async function callOpenRouter(messages) {
+async function callOpenRouter(messages, tools = toolDefinitions) {
   const res = await axios.post(
     `${OPENROUTER_BASE}/chat/completions`,
-    { model: MODEL_MAIN, messages, tools: toolDefinitions, tool_choice: 'auto', max_tokens: 2048 },
+    { model: MODEL_MAIN, messages, tools, tool_choice: 'auto', max_tokens: 2048 },
     { headers: OR_HEADERS, timeout: 60000 }
   );
   return res.data.choices[0];
@@ -190,8 +262,12 @@ export async function respondTo({
   attachments = [],
   discordClient,
   isDM = false,
+  isGuest = false,
 }) {
   const ctx = await getContext(channelId);
+  const activeTools = isGuest
+    ? toolDefinitions.filter(t => GUEST_ALLOWED_TOOLS.has(t.function.name))
+    : toolDefinitions;
 
   // Build system message: base prompt + channel summary + relevant memories + vibe
   const nowHelsinkiStr = new Date().toLocaleString('en-FI', {
@@ -200,9 +276,9 @@ export async function respondTo({
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false,
   });
-  // Build member roster so the model always has user IDs without needing lookup_user
+  // Build member roster (CC members only — guests don't get user IDs)
   let memberRosterBlock = '';
-  if (discordClient) {
+  if (!isGuest && discordClient) {
     try {
       const memberLines = [];
       for (const guild of discordClient.guilds.cache.values()) {
@@ -218,40 +294,65 @@ export async function respondTo({
     } catch (_) {}
   }
 
-  let systemContent = SYSTEM_PROMPT + `\n\n[Current time: ${nowHelsinkiStr} (Europe/Helsinki / EET)]` +
+  let systemContent = SYSTEM_PROMPT +
+    (isGuest ? GUEST_SYSTEM_NOTE : '') +
+    `\n\n[Current time: ${nowHelsinkiStr} (Europe/Helsinki / EET)]` +
     memberRosterBlock +
     (userId ? `\n\n[The person you are responding to has Discord user ID: ${userId}. Use this directly with send_dm — do NOT ask them for their user ID.]` : '') +
     (!isDM ? `\n\n[The current channel ID is: ${channelId}. Use this directly with tools like generate_image, read_channel, create_poll, etc. — do NOT ask for the channel ID.]` : '');
 
-  const storedSummary = await ChannelSummary.findByPk(channelId);
-  if (storedSummary) {
-    systemContent += `\n\n[Long-term channel memory for this channel]:\n${storedSummary.summary}`;
+  // Channel summaries, cross-channel context, and memories are CC-only (may contain private info)
+  if (!isGuest) {
+    const storedSummary = await ChannelSummary.findByPk(channelId);
+    if (storedSummary) {
+      systemContent += `\n\n[Long-term channel memory for this channel]:\n${storedSummary.summary}`;
+    }
+
+    // Cross-channel awareness: 1-liner per other channel active in the last 24h
+    try {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const activeRows = await ConversationLog.findAll({
+        attributes: ['channelId'],
+        where: { createdAt: { [Op.gte]: since }, channelId: { [Op.ne]: channelId } },
+        group: ['channelId'],
+      });
+      const otherChannelIds = activeRows.map(r => r.channelId).filter(id => !id.startsWith('dm_'));
+      if (otherChannelIds.length > 0) {
+        const summaries = await ChannelSummary.findAll({ where: { channelId: otherChannelIds } });
+        if (summaries.length > 0) {
+          const lines = summaries.map(s => `• <#${s.channelId}>: ${s.summary.split('\n')[0].slice(0, 120)}`).join('\n');
+          systemContent += `\n\n[What's been happening in other channels today — for cross-channel continuity]:\n${lines}`;
+        }
+      }
+    } catch (_) {}
+
+    // Inject notes and fine-grained memories separately for clarity
+    try {
+      const allMemories = await BotMemory.findAll({ order: [['category', 'ASC'], ['key', 'ASC']] });
+      const notes = allMemories.filter(m => m.key.startsWith('notes/'));
+      const facts = allMemories.filter(m => !m.key.startsWith('notes/'));
+
+      if (notes.length > 0) {
+        const notesBlock = notes.map(m => {
+          const parts = m.key.split('/');
+          return `=== ${parts[1].toUpperCase()}: ${parts[2]} (updated ${new Date(m.updatedAt).toISOString().slice(0, 10)}) ===\n${m.value}`;
+        }).join('\n\n');
+        systemContent += `\n\n[Stored notes — comprehensive profiles for people, projects, and the group]:\n${notesBlock}`;
+      }
+
+      if (facts.length > 0) {
+        const memBlock = facts.map(m => `[${m.category}] ${m.key}: ${m.value}`).join('\n');
+        systemContent += `\n\n[Your persistent memory — specific facts and details]:\n${memBlock}`;
+      }
+    } catch (_) {}
   }
 
-  // Cross-channel awareness: 1-liner per other channel active in the last 24h
+  // Inject core memories (personality-forming experiences from CORE_MEMORY.md)
   try {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const activeRows = await ConversationLog.findAll({
-      attributes: ['channelId'],
-      where: { createdAt: { [Op.gte]: since }, channelId: { [Op.ne]: channelId } },
-      group: ['channelId'],
-    });
-    const otherChannelIds = activeRows.map(r => r.channelId).filter(id => !id.startsWith('dm_'));
-    if (otherChannelIds.length > 0) {
-      const summaries = await ChannelSummary.findAll({ where: { channelId: otherChannelIds } });
-      if (summaries.length > 0) {
-        const lines = summaries.map(s => `• <#${s.channelId}>: ${s.summary.split('\n')[0].slice(0, 120)}`).join('\n');
-        systemContent += `\n\n[What's been happening in other channels today — for cross-channel continuity]:\n${lines}`;
-      }
-    }
-  } catch (_) {}
-
-  // Inject top-level memories so Sissy knows who people are and what's ongoing
-  try {
-    const allMemories = await BotMemory.findAll({ order: [['category', 'ASC'], ['key', 'ASC']] });
-    if (allMemories.length > 0) {
-      const memBlock = allMemories.map(m => `[${m.category}] ${m.key}: ${m.value}`).join('\n');
-      systemContent += `\n\n[Your persistent memory — things you've learned and stored]:\n${memBlock}`;
+    const coreMemPath = path.resolve('CORE_MEMORY.md');
+    if (fs.existsSync(coreMemPath)) {
+      const coreMem = fs.readFileSync(coreMemPath, 'utf8').trim();
+      if (coreMem) systemContent += `\n\n[Your core memories — formative experiences that have shaped your personality]:\n${coreMem}`;
     }
   } catch (_) {}
 
@@ -262,7 +363,10 @@ export async function respondTo({
   // Build user message
   let preamble = '';
   if (pastMessages.length > 0) {
-    preamble = 'Recent channel messages:\n' + pastMessages.map(m => `${m.name}: ${m.message}`).join('\n') + '\n\n';
+    preamble = 'Recent channel messages:\n' + pastMessages.map(m => {
+      const ts = m.timestamp ? `[${fmtHelsinki(m.timestamp)}] ` : '';
+      return `${ts}${m.name}: ${m.message}`;
+    }).join('\n') + '\n\n';
   }
 
   let userText = preamble + (username ? `${username}: ${input}` : input);
@@ -273,7 +377,7 @@ export async function respondTo({
 
   const messages = [
     { role: 'system', content: systemContent },
-    ...ctx,
+    ...buildContextMessages(ctx),
     { role: 'user', content: userContent },
   ];
 
@@ -286,7 +390,7 @@ export async function respondTo({
 
   while (loopCount < MAX_LOOPS) {
     loopCount++;
-    const choice = await callOpenRouter(messages);
+    const choice = await callOpenRouter(messages, activeTools);
 
     const hasToolCalls = choice.message.tool_calls && choice.message.tool_calls.length > 0;
     console.log(`[loop ${loopCount}] finish_reason=${choice.finish_reason} tool_calls=${hasToolCalls} content=${String(choice.message.content || '').slice(0, 80)}`);
@@ -341,8 +445,9 @@ export async function respondTo({
       }
 
       const userContentStr = typeof userContent === 'string' ? userContent : JSON.stringify(userContent);
-      ctx.push({ role: 'user', content: userContentStr });
-      ctx.push({ role: 'assistant', content: assistantContent });
+      const now = new Date();
+      ctx.push({ role: 'user', content: userContentStr, createdAt: now });
+      ctx.push({ role: 'assistant', content: assistantContent, createdAt: now });
       trimContext(ctx);
       // Persist to DB (fire-and-forget — don't block the reply)
       logTurn(channelId, 'user', userContentStr).catch(() => {});
