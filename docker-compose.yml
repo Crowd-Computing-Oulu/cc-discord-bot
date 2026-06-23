@@ -15,7 +15,7 @@ services:
       - INBOUND_EMAIL_PORT=${INBOUND_EMAIL_PORT}
       - INBOUND_EMAIL_CHANNEL_ID=${INBOUND_EMAIL_CHANNEL_ID}
     ports:
-      - "${INBOUND_EMAIL_PORT:-3001}:3001"
+      - "3001:3001"
     volumes:
       - db-data:/app/data
 
