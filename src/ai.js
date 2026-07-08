@@ -429,6 +429,22 @@ export async function respondTo({
       // Final text — may be in content or in reasoning models' output
       finalText = choice.message.content || '';
 
+      // Reasoning models (e.g. Qwen3) sometimes inline think content in `content`
+      // instead of (or in addition to) a separate `reasoning` field. Observed shapes:
+      //   <think>...</think>answer          — paired tags
+      //   <think>...answer (truncated)       — unterminated opening tag
+      //   answer</think>answer               — bare closing tag with no opening tag,
+      //                                         where the pre-tag text is a reasoning
+      //                                         draft that duplicates the real answer
+      // In all cases the real answer is whatever comes after the LAST </think>, so
+      // strip everything up to and including it, then fall back to stripping an
+      // unterminated <think> block if one remains.
+      const lastCloseIdx = finalText.toLowerCase().lastIndexOf('</think>');
+      if (lastCloseIdx !== -1) {
+        finalText = finalText.slice(lastCloseIdx + '</think>'.length).trim();
+      }
+      finalText = finalText.replace(/<think>[\s\S]*$/i, '').trim();
+
       // Some models return empty content with finish_reason=stop after tool use — treat as done
       if (!finalText && loopCount > 1) {
         finalText = '';
@@ -458,7 +474,9 @@ export async function respondTo({
 
   if (finalText === null) finalText = 'Ran into an issue processing that — sorry.';
 
-  if (finalText.trim() === 'NULL_RESPONSE') return null;
+  // Strip stray quoting/punctuation the model sometimes wraps the sentinel in
+  // so a near-miss doesn't leak "NULL_RESPONSE" as a real message.
+  if (finalText.trim().replace(/^["'`.\s]+|["'`.\s]+$/g, '') === 'NULL_RESPONSE') return null;
 
   return finalText || null;
 }
