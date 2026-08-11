@@ -11,11 +11,17 @@ import db from './database.js';
 
 const { TexpositLink } = db;
 
+// Server-to-server: what Sissy's own process uses to call the API. In Docker
+// this is host.docker.internal, an address meaningless outside the container.
 const TEXPOSIT_BASE_URL = process.env.TEXPOSIT_BASE_URL || 'http://localhost:5000';
+// Human-facing: what gets put in a link shown to a Discord user, who needs a
+// URL their own browser can actually open. Falls back to TEXPOSIT_BASE_URL so
+// single-value setups (bare-metal, same host reachable both ways) still work.
+const TEXPOSIT_PUBLIC_URL = process.env.TEXPOSIT_PUBLIC_URL || TEXPOSIT_BASE_URL;
 const APP_SLUG = 'sissy';
 
 export function getAuthorizeUrl(scope = 'read_write') {
-  const url = new URL('/integrations/authorize', TEXPOSIT_BASE_URL);
+  const url = new URL('/integrations/authorize', TEXPOSIT_PUBLIC_URL);
   url.searchParams.set('app', APP_SLUG);
   url.searchParams.set('scope', scope);
   return url.toString();
