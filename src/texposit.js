@@ -20,7 +20,26 @@ const TEXPOSIT_BASE_URL = process.env.TEXPOSIT_BASE_URL || 'http://localhost:500
 const TEXPOSIT_PUBLIC_URL = process.env.TEXPOSIT_PUBLIC_URL || TEXPOSIT_BASE_URL;
 const APP_SLUG = 'sissy';
 
-export function getAuthorizeUrl(scope = 'read_write') {
+// Self-registers Sissy's app identity (slug/name only — grants zero access
+// by itself) so a TeXposit instance never needs a manual admin/CLI step
+// before the first /texposit connect. Idempotent server-side; failures are
+// swallowed here because the worst case if this doesn't run is the same
+// "unknown app" the consent screen already handled before self-registration
+// existed, not a broken connect flow.
+async function ensureAppRegistered() {
+  try {
+    await axios.post(
+      new URL('/api/external/apps/register', TEXPOSIT_BASE_URL).toString(),
+      { slug: APP_SLUG, name: 'Sissy', description: 'Discord bot with LaTeX project access' },
+      { timeout: 15000 }
+    );
+  } catch (err) {
+    console.error('[texposit] app self-registration failed:', err.response?.data?.error || err.message);
+  }
+}
+
+export async function getAuthorizeUrl(scope = 'read_write') {
+  await ensureAppRegistered();
   const url = new URL('/integrations/authorize', TEXPOSIT_PUBLIC_URL);
   url.searchParams.set('app', APP_SLUG);
   url.searchParams.set('scope', scope);

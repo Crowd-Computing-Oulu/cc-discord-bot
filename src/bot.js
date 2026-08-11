@@ -774,7 +774,7 @@ client.on('interactionCreate', async interaction => {
     const discordUserId = interaction.user.id;
 
     if (sub === 'connect') {
-      const url = texposit.getAuthorizeUrl('read_write');
+      const url = await texposit.getAuthorizeUrl('read_write');
       await interaction.reply({
         content: `Open this link, sign in to TeXposit, and choose which projects to share:\n${url}\n\nAfter approving, TeXposit will show you a token — paste it here with \`/texposit token\`.`,
         ephemeral: true,
