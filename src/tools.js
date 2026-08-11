@@ -1525,16 +1525,25 @@ async function toolLeaveChannelAndEraseMemory({ channel_id }, discordClient) {
     }
     deleteResults.memories = channelMemories.length;
 
-    // Leave the channel
+    // Leave the channel by denying permissions and sending goodbye message
     if (channel.isTextBased()) {
       try {
         await channel.send('👋 Leaving this channel and erasing all memories about it. Goodbye!');
       } catch (_) {}
 
-      // Try to leave if it's a private channel (DM); text channels can't be "left"
-      if (channel.isDMBased?.()) {
-        await channel.delete().catch(() => {});
-      }
+      // Deny bot's permissions in this channel
+      try {
+        if (channel.isDMBased?.()) {
+          // For DMs, delete the channel entirely
+          await channel.delete();
+        } else {
+          // For guild channels, deny ViewChannel permission to remove bot from the channel
+          await channel.permissionOverwrites.create(discordClient.user.id, {
+            ViewChannel: false,
+            SendMessages: false,
+          });
+        }
+      } catch (_) {}
     }
   } catch (e) {
     return { error: `Failed to leave channel: ${e.message}` };
