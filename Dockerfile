@@ -46,5 +46,12 @@ RUN npm install --production
 # Copy rest of the application code
 COPY . .
 
-# Start bot
-CMD ["npm", "start"]
+# Install ngrok
+RUN npm install -g ngrok
+
+# Copy and make startup script executable
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+# Start bot with ngrok
+CMD ["/app/start.sh"]

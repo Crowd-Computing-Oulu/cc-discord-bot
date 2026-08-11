@@ -4,7 +4,7 @@ import path from 'path';
 import { toolDefinitions, executeTool } from './tools.js';
 import db from './database.js';
 
-const { ChannelSummary, BotMemory, ConversationLog, Op } = db;
+const { ChannelSummary, BotMemory, UserMemory, ConversationLog, Op } = db;
 
 const OPENROUTER_KEY = process.env.OPENROUTER_APIKEY;
 const MODEL_MAIN = 'qwen/qwen3.7-plus';
@@ -113,8 +113,8 @@ async function getContext(channelId) {
   return channelContexts.get(channelId);
 }
 
-async function logTurn(channelId, role, content) {
-  await ConversationLog.create({ channelId, role, content, createdAt: new Date() });
+async function logTurn(channelId, role, content, userId = null) {
+  await ConversationLog.create({ channelId, userId, role, content, createdAt: new Date() });
 }
 
 function trimContext(ctx, maxMessages = 60) {
@@ -250,6 +250,19 @@ export async function shouldRespondWithGranite(recentMessages, newMessage, botNa
   return answer.startsWith('YES');
 }
 
+// ─── Load user memories ───────────────────────────────────────────────────────
+
+async function getUserMemoriesBlock(userId) {
+  if (!userId) return '';
+  const memories = await UserMemory.findAll({
+    where: { userId },
+    order: [['category', 'ASC'], ['key', 'ASC']],
+  });
+  if (memories.length === 0) return '';
+  const lines = memories.map(m => `[${m.category}] ${m.key}: ${m.value}`).join('\n');
+  return `\n\n[Facts about this person from past conversations]:\n${lines}`;
+}
+
 // ─── Main respond function ────────────────────────────────────────────────────
 
 export async function respondTo({
@@ -303,6 +316,12 @@ export async function respondTo({
 
   // Channel summaries, cross-channel context, and memories are CC-only (may contain private info)
   if (!isGuest) {
+    // User-specific memories (available in all channels where this user participates)
+    if (userId) {
+      const userMemBlock = await getUserMemoriesBlock(userId);
+      if (userMemBlock) systemContent += userMemBlock;
+    }
+
     const storedSummary = await ChannelSummary.findByPk(channelId);
     if (storedSummary) {
       systemContent += `\n\n[Long-term channel memory for this channel]:\n${storedSummary.summary}`;
@@ -466,7 +485,7 @@ export async function respondTo({
       ctx.push({ role: 'assistant', content: assistantContent, createdAt: now });
       trimContext(ctx);
       // Persist to DB (fire-and-forget — don't block the reply)
-      logTurn(channelId, 'user', userContentStr).catch(() => {});
+      logTurn(channelId, 'user', userContentStr, userId).catch(() => {});
       logTurn(channelId, 'assistant', assistantContent).catch(() => {});
       break;
     }
@@ -510,6 +529,9 @@ async function compactYesterday() {
       order: [['createdAt', 'ASC']],
     });
     if (rows.length === 0) continue;
+
+    // Extract unique userIds who participated (for user-scoped memory extraction)
+    const userIds = [...new Set(rows.filter(r => r.userId).map(r => r.userId))];
 
     const transcript = rows.map(r => `${r.role === 'user' ? 'User' : 'Sissy'}: ${r.content}`).join('\n').slice(0, 6000);
 
@@ -568,7 +590,63 @@ Respond with valid JSON only.`;
       }
     }
 
-    console.log(`[compaction] ${channelId}: ${isDM ? 'DM' : 'channel'} processed, ${compactionResult.memories?.length ?? 0} memories written`);
+    // Extract per-user memories
+    if (isDM) {
+      // DM: userId is in the channelId
+      const dmUserId = channelId.replace('dm_', '');
+      if (dmUserId && compactionResult.memories) {
+        for (const mem of compactionResult.memories) {
+          if (!mem.key || !mem.value) continue;
+          await UserMemory.upsert({ userId: dmUserId, key: mem.key, value: mem.value, category: mem.category ?? 'other', updatedAt: new Date() });
+        }
+      }
+    } else if (userIds.length > 0) {
+      // Public channel: extract user-specific facts for each participant
+      for (const userId of userIds) {
+        try {
+          const userTranscript = rows
+            .filter(r => !r.userId || r.userId === userId || r.role === 'assistant')
+            .map(r => {
+              if (r.role === 'assistant') return `Sissy: ${r.content}`;
+              return r.userId === userId ? `User: ${r.content}` : `[${r.userId || 'unknown'}]: ${r.content}`;
+            })
+            .join('\n')
+            .slice(0, 4000);
+
+          const userPrompt = `You are a memory compaction assistant. Given a conversation transcript, extract facts about a specific participant (their projects, interests, problems, preferences). Produce a JSON object with:
+"memories": array of { "key": "topic", "value": "fact", "category": "category" } — only facts about this person. If nothing memorable, return { "memories": [] }.
+
+Respond with valid JSON only.`;
+
+          const userRes = await axios.post(
+            `${OPENROUTER_BASE}/chat/completions`,
+            {
+              model: MODEL_FAST,
+              messages: [
+                { role: 'system', content: userPrompt },
+                { role: 'user', content: `Extract facts about user ${userId}:\n\n${userTranscript}` },
+              ],
+              max_tokens: 400,
+            },
+            { headers: OR_HEADERS, timeout: 20000 }
+          );
+          const raw = userRes.data.choices[0].message.content.trim();
+          const jsonStr = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+          const userResult = JSON.parse(jsonStr);
+
+          if (Array.isArray(userResult.memories)) {
+            for (const mem of userResult.memories) {
+              if (!mem.key || !mem.value) continue;
+              await UserMemory.upsert({ userId, key: mem.key, value: mem.value, category: mem.category ?? 'other', updatedAt: new Date() });
+            }
+          }
+        } catch (err) {
+          console.error(`[compaction] failed to extract user memory for ${userId} in ${channelId}:`, err.message);
+        }
+      }
+    }
+
+    console.log(`[compaction] ${channelId}: ${isDM ? 'DM' : 'channel'} processed, ${compactionResult.memories?.length ?? 0} memories written, ${userIds.length} users analyzed`);
   }
 
   // Prune log rows older than retention window

@@ -4,6 +4,7 @@ import { REST, Routes } from 'discord.js';
 import db from './database.js';
 import { respondTo, respondToDM, shouldRespondWithGranite, scheduleNightlyCompaction } from './ai.js';
 import express from 'express';
+import * as texposit from './texposit.js';
 
 const { Reminder, RepeatReminder, ScheduledTask, ChannelSummary, BotMemory, initialize, Op } = db;
 
@@ -98,6 +99,11 @@ const cmds = [
     .addIntegerOption(o => o.setName('limit').setDescription('Number of messages to summarise (default 100)')),
 
   new SlashCommandBuilder()
+    .setName('leave')
+    .setDescription('Remove Sissy from this channel and erase all memories/history about it.')
+    .addBooleanOption(o => o.setName('confirm').setDescription('Confirm deletion of all channel memories (default false)').setRequired(false)),
+
+  new SlashCommandBuilder()
     .setName('list')
     .setDescription('List DB entries of a given type.')
     .addStringOption(o =>
@@ -149,6 +155,28 @@ const cmds = [
     .addStringOption(o => o.setName('key').setDescription('Memory key').setRequired(true))
     .addStringOption(o => o.setName('value').setDescription('New value (for set)'))
     .addStringOption(o => o.setName('category').setDescription('Category (for set)')),
+
+  new SlashCommandBuilder()
+    .setName('texposit')
+    .setDescription('Connect and work with your TeXposit projects.')
+    .addSubcommand(sc => sc.setName('connect').setDescription('Get a link to share TeXposit projects with Sissy.'))
+    .addSubcommand(sc =>
+      sc.setName('token').setDescription('Paste the token TeXposit gave you after approving access.')
+        .addStringOption(o => o.setName('value').setDescription('The token from the TeXposit approval page').setRequired(true)))
+    .addSubcommand(sc => sc.setName('disconnect').setDescription('Forget your TeXposit connection.'))
+    .addSubcommand(sc => sc.setName('projects').setDescription('List the TeXposit projects you\'ve shared with Sissy.'))
+    .addSubcommand(sc =>
+      sc.setName('create').setDescription('Create a new TeXposit project (needs read & write access).')
+        .addStringOption(o => o.setName('name').setDescription('Project name').setRequired(true)))
+    .addSubcommand(sc =>
+      sc.setName('read').setDescription('Read a file from a shared TeXposit project.')
+        .addStringOption(o => o.setName('project').setDescription('Project UUID (see /texposit projects)').setRequired(true))
+        .addStringOption(o => o.setName('path').setDescription('File path, e.g. main.tex').setRequired(true)))
+    .addSubcommand(sc =>
+      sc.setName('write').setDescription('Overwrite a file in a shared TeXposit project (needs read & write access).')
+        .addStringOption(o => o.setName('project').setDescription('Project UUID (see /texposit projects)').setRequired(true))
+        .addStringOption(o => o.setName('path').setDescription('File path, e.g. main.tex').setRequired(true))
+        .addStringOption(o => o.setName('content').setDescription('New file content').setRequired(true))),
 ];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -163,6 +191,9 @@ try {
 // ─── Role-based access control ───────────────────────────────────────────────
 
 function isCC(member) {
+  // Local/test env escape hatch — production never sets this, so the real
+  // CC-role gate stays enforced everywhere it matters.
+  if (process.env.SKIP_CC_GATE === 'true') return true;
   return member?.roles?.cache?.some(r => r.name === 'CC') ?? false;
 }
 
@@ -711,7 +742,130 @@ client.on('interactionCreate', async interaction => {
     }
     return;
   }
+
+  if (interaction.commandName === 'leave') {
+    const confirm = interaction.options.getBoolean('confirm') ?? false;
+    if (!confirm) {
+      await interaction.reply({
+        content: '⚠️ This will **permanently erase** all memories, summaries, and conversation history about this channel. Run `/leave confirm:true` to proceed.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.deferReply();
+    try {
+      const response = await respondTo({
+        channelId: interaction.channelId,
+        userId: interaction.user.id,
+        input: `Please leave this channel and erase all memories about it using the leave_channel_and_erase_memory tool. Channel ID: ${interaction.channelId}`,
+        discordClient: client,
+      });
+      await interaction.editReply(response?.slice(0, 2000) || '👋 Done!');
+    } catch (e) {
+      console.error('/leave error:', e.message);
+      await interaction.editReply('Sorry, could not leave the channel.');
+    }
+    return;
+  }
+
+  if (interaction.commandName === 'texposit') {
+    const sub = interaction.options.getSubcommand();
+    const discordUserId = interaction.user.id;
+
+    if (sub === 'connect') {
+      const url = texposit.getAuthorizeUrl('read_write');
+      await interaction.reply({
+        content: `Open this link, sign in to TeXposit, and choose which projects to share:\n${url}\n\nAfter approving, TeXposit will show you a token — paste it here with \`/texposit token\`.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (sub === 'token') {
+      const value = interaction.options.getString('value');
+      try {
+        const info = await texposit.whoamiWithToken(value);
+        await texposit.saveLink(discordUserId, value, info.scope);
+        const access = info.all_projects ? 'all your projects' : 'the projects you selected';
+        await interaction.reply({ content: `Connected! I have **${info.scope === 'read_write' ? 'read & write' : 'read-only'}** access to ${access}. Try \`/texposit projects\`.`, ephemeral: true });
+      } catch (e) {
+        await interaction.reply({ content: `That token didn't work: ${e.message}. Try \`/texposit connect\` again.`, ephemeral: true });
+      }
+      return;
+    }
+
+    if (sub === 'disconnect') {
+      await texposit.disconnect(discordUserId);
+      await interaction.reply({ content: 'Disconnected your TeXposit account. Your access can still be revoked from the TeXposit Connected Apps page if it wasn\'t already.', ephemeral: true });
+      return;
+    }
+
+    if (sub === 'projects') {
+      try {
+        const projects = await texposit.listProjects(discordUserId);
+        if (projects.length === 0) {
+          await interaction.reply({ content: 'No projects shared yet. Use `/texposit connect` to share some.', ephemeral: true });
+          return;
+        }
+        const lines = projects.map(p => `\`${p.uuid}\` — **${p.name}** (${p.role})`);
+        await interaction.reply({ content: `**Shared TeXposit projects:**\n${lines.join('\n')}`.slice(0, 2000), ephemeral: true });
+      } catch (e) {
+        await interaction.reply({ content: texpositErrorMessage(e), ephemeral: true });
+      }
+      return;
+    }
+
+    if (sub === 'create') {
+      const name = interaction.options.getString('name');
+      try {
+        const project = await texposit.createProject(discordUserId, name);
+        await interaction.reply({ content: `Created **${project.name}** — \`${project.uuid}\`. Use \`/texposit read\`/\`write\` with that project UUID.`, ephemeral: true });
+      } catch (e) {
+        await interaction.reply({ content: texpositErrorMessage(e), ephemeral: true });
+      }
+      return;
+    }
+
+    if (sub === 'read') {
+      const project = interaction.options.getString('project');
+      const path = interaction.options.getString('path');
+      try {
+        const content = await texposit.readFile(discordUserId, project, path);
+        const chunks = splitMessage(`**${path}**\n\`\`\`latex\n${content}\n\`\`\``);
+        await interaction.reply({ content: chunks[0], ephemeral: true });
+        for (const chunk of chunks.slice(1)) await interaction.followUp({ content: chunk, ephemeral: true });
+      } catch (e) {
+        await interaction.reply({ content: texpositErrorMessage(e), ephemeral: true });
+      }
+      return;
+    }
+
+    if (sub === 'write') {
+      const project = interaction.options.getString('project');
+      const path = interaction.options.getString('path');
+      const content = interaction.options.getString('content');
+      try {
+        // Whole-file replace, via the same validated edits pipeline as
+        // targeted patches (see applyEdits in texposit.js) — 'write' is a
+        // real edit type on TeXposit's side, not a separate raw overwrite.
+        await texposit.applyEdits(discordUserId, project, [{ file: path, type: 'write', replace: content }]);
+        await interaction.reply({ content: `Updated \`${path}\`.`, ephemeral: true });
+      } catch (e) {
+        await interaction.reply({ content: texpositErrorMessage(e), ephemeral: true });
+      }
+      return;
+    }
+  }
 });
+
+function texpositErrorMessage(e) {
+  if (e.status === 0) return 'Not connected to TeXposit yet. Use `/texposit connect` first.';
+  if (e.status === 401) return 'Your TeXposit connection was revoked. Use `/texposit connect` to reconnect.';
+  if (e.status === 403) return `Not allowed: ${e.message}`;
+  if (e.status === 404) return 'Project or file not found — check `/texposit projects`.';
+  return `TeXposit error: ${e.message}`;
+}
 
 // ─── Ready ────────────────────────────────────────────────────────────────────
 client.once(Events.ClientReady, rc => {
@@ -744,27 +898,21 @@ app.post('/email/inbound', async (req, res) => {
       read: false,
     });
 
-    if (INBOUND_NOTIFY_CHANNEL) {
+    // Process email in background — don't wait for response
+    (async () => {
       try {
         const sender = fromName ? `${fromName} <${fromAddress}>` : fromAddress;
-        const prompt = `[SYSTEM: new inbound email — you MUST respond, do NOT reply NULL_RESPONSE]\n\nFrom: ${sender}\nSubject: ${email.subject}\n\n${body}\n\nYou have the full email content above. Decide what to do: share it in Discord, reply with send_email, or just acknowledge it here. Act on it now.`;
-        const response = await respondTo({
-          channelId: INBOUND_NOTIFY_CHANNEL,
+        const prompt = `[SYSTEM: new inbound email]\n\nFrom: ${sender}\nSubject: ${email.subject}\n\n${body}\n\nYou received this email. Act on it: reply with send_email, make TeXposit edits, send Discord messages, or take other appropriate action.`;
+        await respondTo({
+          channelId: 'email_inbound',
           userId: null,
           input: prompt,
           discordClient: client,
         });
-        if (response) {
-          const ch = await client.channels.fetch(INBOUND_NOTIFY_CHANNEL);
-          if (ch?.isTextBased()) {
-            const chunks = splitMessage(`📬 **Email from ${sender}** — *${email.subject}*\n\n${response}`);
-            for (const chunk of chunks) await ch.send(chunk);
-          }
-        }
       } catch (e) {
         console.error('Inbound email AI handler error:', e.message);
       }
-    }
+    })();
 
     res.status(200).json({ ok: true, id: email.id });
   } catch (e) {

@@ -14,6 +14,7 @@ import {
   ComponentType,
 } from 'discord.js';
 import db from './database.js';
+import * as texposit from './texposit.js';
 import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
@@ -55,7 +56,7 @@ const _OR_HEADERS = {
   'X-Title': 'Sissy Discord Bot',
 };
 
-const { Reminder, RepeatReminder, ScheduledTask, ChannelSummary, BotMemory } = db;
+const { Reminder, RepeatReminder, ScheduledTask, ChannelSummary, BotMemory, ConversationLog, Op } = db;
 
 // ─── Cron helpers ────────────────────────────────────────────────────────────
 
@@ -413,6 +414,20 @@ export const toolDefinitions = [
         type: 'object',
         properties: {
           channel_id: { type: 'string' },
+        },
+        required: ['channel_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'leave_channel_and_erase_memory',
+      description: 'Remove Sissy from a Discord channel and permanently erase all memories, summaries, and conversation history about that channel. Use when requested to leave or when a channel is archived.',
+      parameters: {
+        type: 'object',
+        properties: {
+          channel_id: { type: 'string', description: 'The Discord channel ID to leave' },
         },
         required: ['channel_id'],
       },
@@ -966,6 +981,118 @@ export const toolDefinitions = [
       },
     },
   },
+
+  // ── TeXposit ──
+  // No user_id/discord_user_id field on any of these: whose TeXposit account
+  // is acting is always the Discord user who sent the message that triggered
+  // this tool call, resolved server-side from requestingUserId in
+  // executeTool() below — never a value the model can supply. That's what
+  // stops one Discord user's chat message from touching another Discord
+  // user's TeXposit projects, however the request is phrased.
+  {
+    type: 'function',
+    function: {
+      name: 'texposit_projects',
+      description: 'List the TeXposit LaTeX projects the current Discord user has shared with Sissy. Call this first if the user refers to a project by name rather than UUID — texposit_read_file/texposit_edit_file need the UUID.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'texposit_read_file',
+      description: 'Read a file from one of the current Discord user\'s shared TeXposit projects.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_uuid: { type: 'string', description: 'From texposit_projects' },
+          path: { type: 'string', description: 'File path within the project, e.g. "main.tex"' },
+        },
+        required: ['project_uuid', 'path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'texposit_edit_file',
+      description: 'Edit a file in one of the current Discord user\'s shared TeXposit projects using targeted search/replace patches — never a whole-file rewrite. Only works if they granted read & write access. Always texposit_read_file first: "search" must be copied verbatim from what you just read, not retyped or paraphrased, or the edit will fail to match.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_uuid: { type: 'string', description: 'From texposit_projects' },
+          path: { type: 'string', description: 'File path within the project, e.g. "main.tex"' },
+          edits: {
+            type: 'array',
+            description: 'One or more patch operations against this file, applied in order.',
+            items: {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  enum: ['replace', 'replace_lines', 'insert', 'delete'],
+                  description: '"replace": swap search->replace text. "replace_lines": replace start_line..end_line with replace. "insert": insert replace text after start_line. "delete": remove the search text.',
+                },
+                search: { type: 'string', description: 'Exact existing text to find (for replace/delete)' },
+                replace: { type: 'string', description: 'New text (for replace/insert)' },
+                replace_all: { type: 'boolean', description: 'For type=replace: replace every occurrence instead of failing when search is ambiguous' },
+                start_line: { type: 'integer' },
+                end_line: { type: 'integer', description: 'For replace_lines' },
+              },
+              required: ['type'],
+            },
+          },
+        },
+        required: ['project_uuid', 'path', 'edits'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'texposit_create_project',
+      description: 'Create a new TeXposit LaTeX project for the current Discord user. Only works if they granted read & write access.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Project name' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'texposit_comment',
+      description: 'Leave a review comment on a specific line of a file in one of the current Discord user\'s shared TeXposit projects. Shows up live in the TeXposit editor, tagged as posted via Sissy. Only works if they granted read & write access.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_uuid: { type: 'string', description: 'From texposit_projects' },
+          path: { type: 'string', description: 'File path within the project, e.g. "main.tex"' },
+          text: { type: 'string', description: 'The comment text' },
+          line: { type: 'integer', description: 'Line number the comment applies to (optional, defaults to top of file)' },
+        },
+        required: ['project_uuid', 'path', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'texposit_share_link',
+      description: 'Get a public URL for one of the current Discord user\'s shared TeXposit projects, safe to post in a Discord channel for anyone (even without a TeXposit account) to open. "view" is a read-only page with the compiled PDF; "review" additionally lets visitors leave review comments. Turns that sharing setting on for the project if it wasn\'t already — tell the user this before using "review" on something they might not want visible yet.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_uuid: { type: 'string', description: 'From texposit_projects' },
+          mode: { type: 'string', enum: ['view', 'review'], description: 'Defaults to "view"' },
+        },
+        required: ['project_uuid'],
+      },
+    },
+  },
 ];
 
 // ─── Tool executor ────────────────────────────────────────────────────────────
@@ -1003,6 +1130,7 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'get_server_stats': return await toolGetServerStats(args, discordClient);
     case 'summarise_and_store_history': return await toolSummariseAndStore(args, discordClient);
     case 'get_channel_summary': return await toolGetChannelSummary(args);
+    case 'leave_channel_and_erase_memory': return await toolLeaveChannelAndEraseMemory(args, discordClient);
     case 'memory_write': return await toolMemoryWrite(args);
     case 'memory_read': return await toolMemoryRead(args);
     case 'memory_list': return await toolMemoryList(args);
@@ -1034,6 +1162,14 @@ export async function executeTool(name, args, discordClient, requestingUserId) {
     case 'notes_upsert': return await toolNotesUpsert(args);
     case 'notes_read': return await toolNotesRead(args);
     case 'notes_list': return await toolNotesList();
+    // discordUserId is always requestingUserId here, never taken from args —
+    // see the "No user_id/discord_user_id field" comment on the tool defs.
+    case 'texposit_projects': return await toolTexpositProjects(requestingUserId);
+    case 'texposit_read_file': return await toolTexpositReadFile(args, requestingUserId);
+    case 'texposit_edit_file': return await toolTexpositEditFile(args, requestingUserId);
+    case 'texposit_create_project': return await toolTexpositCreateProject(args, requestingUserId);
+    case 'texposit_comment': return await toolTexpositComment(args, requestingUserId);
+    case 'texposit_share_link': return await toolTexpositShareLink(args, requestingUserId);
     default: return { error: `Unknown tool: ${name}` };
   }
 }
@@ -1359,6 +1495,58 @@ async function toolGetChannelSummary({ channel_id }) {
   const row = await ChannelSummary.findByPk(channel_id);
   if (!row) return { found: false, message: 'No stored summary for this channel yet.' };
   return { found: true, channel_id, summary: row.summary, updatedAt: row.updatedAt, messageCount: row.messageCount };
+}
+
+async function toolLeaveChannelAndEraseMemory({ channel_id }, discordClient) {
+  let channelName = 'unknown';
+  let deleteResults = { summaries: 0, conversations: 0, memories: 0 };
+
+  try {
+    // Fetch channel info before leaving
+    const channel = await discordClient.channels.fetch(channel_id);
+    if (!channel) return { error: 'Channel not found' };
+    channelName = channel.name || channel_id;
+
+    // Delete channel summary
+    const summary = await ChannelSummary.findByPk(channel_id);
+    if (summary) {
+      await summary.destroy();
+      deleteResults.summaries = 1;
+    }
+
+    // Delete all conversation logs for this channel
+    const convDeleted = await ConversationLog.destroy({ where: { channelId: channel_id } });
+    deleteResults.conversations = convDeleted;
+
+    // Delete channel-specific memories (keys like "channel_<id>_*")
+    const channelMemories = await BotMemory.findAll({ where: { key: { [Op.like]: `channel_${channel_id}_%` } } });
+    for (const mem of channelMemories) {
+      await mem.destroy();
+    }
+    deleteResults.memories = channelMemories.length;
+
+    // Leave the channel
+    if (channel.isTextBased()) {
+      try {
+        await channel.send('👋 Leaving this channel and erasing all memories about it. Goodbye!');
+      } catch (_) {}
+
+      // Try to leave if it's a private channel (DM); text channels can't be "left"
+      if (channel.isDMBased?.()) {
+        await channel.delete().catch(() => {});
+      }
+    }
+  } catch (e) {
+    return { error: `Failed to leave channel: ${e.message}` };
+  }
+
+  return {
+    success: true,
+    channel: channelName,
+    channel_id,
+    erased: deleteResults,
+    message: `Sissy has left #${channelName} and erased ${deleteResults.summaries} summary, ${deleteResults.conversations} conversation logs, and ${deleteResults.memories} channel-specific memories.`,
+  };
 }
 
 // ─── Bot persistent memory ────────────────────────────────────────────────────
@@ -1971,6 +2159,71 @@ async function toolFsRead({ file_path, user_id }) {
   } catch (e) {
     return { error: e.message };
   }
+}
+
+async function toolTexpositProjects(discordUserId) {
+  try {
+    const projects = await texposit.listProjects(discordUserId);
+    return { projects };
+  } catch (e) {
+    return { error: texpositToolErrorMessage(e) };
+  }
+}
+
+async function toolTexpositReadFile({ project_uuid, path: filePath }, discordUserId) {
+  try {
+    const content = await texposit.readFile(discordUserId, project_uuid, filePath);
+    return { project_uuid, path: filePath, content };
+  } catch (e) {
+    return { error: texpositToolErrorMessage(e) };
+  }
+}
+
+async function toolTexpositEditFile({ project_uuid, path: filePath, edits }, discordUserId) {
+  try {
+    // 'file' is the endpoint's URL, not per-edit — inject it so callers only
+    // have to think about one file per tool call, matching the tool schema.
+    const fullEdits = (edits || []).map(e => ({ ...e, file: filePath }));
+    const results = await texposit.applyEdits(discordUserId, project_uuid, fullEdits);
+    return { project_uuid, path: filePath, results };
+  } catch (e) {
+    return { error: texpositToolErrorMessage(e) };
+  }
+}
+
+async function toolTexpositCreateProject({ name }, discordUserId) {
+  try {
+    const project = await texposit.createProject(discordUserId, name);
+    return { success: true, project };
+  } catch (e) {
+    return { error: texpositToolErrorMessage(e) };
+  }
+}
+
+async function toolTexpositComment({ project_uuid, path: filePath, text, line }, discordUserId) {
+  try {
+    const comment = await texposit.createComment(discordUserId, project_uuid, filePath, text, line);
+    return { success: true, comment_uuid: comment.uuid };
+  } catch (e) {
+    return { error: texpositToolErrorMessage(e) };
+  }
+}
+
+async function toolTexpositShareLink({ project_uuid, mode }, discordUserId) {
+  try {
+    const url = await texposit.getShareLink(discordUserId, project_uuid, mode || 'view');
+    return { url, mode: mode || 'view' };
+  } catch (e) {
+    return { error: texpositToolErrorMessage(e) };
+  }
+}
+
+function texpositToolErrorMessage(e) {
+  if (e.status === 0) return 'This Discord user has not connected a TeXposit account yet — tell them to run /texposit connect.';
+  if (e.status === 401) return 'This Discord user\'s TeXposit connection was revoked — tell them to run /texposit connect again.';
+  if (e.status === 403) return `Not allowed: ${e.message}`;
+  if (e.status === 404) return 'Project or file not found — call texposit_projects to see what is actually shared.';
+  return `TeXposit error: ${e.message}`;
 }
 
 async function toolFsList({ directory = '', user_id }) {
