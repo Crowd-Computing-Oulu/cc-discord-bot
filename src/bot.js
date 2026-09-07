@@ -831,7 +831,8 @@ client.on('interactionCreate', async interaction => {
       const project = interaction.options.getString('project');
       const path = interaction.options.getString('path');
       try {
-        const content = await texposit.readFile(discordUserId, project, path);
+        const uuid = await texposit.resolveProjectUuid(discordUserId, project);
+        const content = await texposit.readFile(discordUserId, uuid, path);
         const chunks = splitMessage(`**${path}**\n\`\`\`latex\n${content}\n\`\`\``);
         await interaction.reply({ content: chunks[0], ephemeral: true });
         for (const chunk of chunks.slice(1)) await interaction.followUp({ content: chunk, ephemeral: true });
@@ -849,7 +850,8 @@ client.on('interactionCreate', async interaction => {
         // Whole-file replace, via the same validated edits pipeline as
         // targeted patches (see applyEdits in texposit.js) — 'write' is a
         // real edit type on TeXposit's side, not a separate raw overwrite.
-        await texposit.applyEdits(discordUserId, project, [{ file: path, type: 'write', replace: content }]);
+        const uuid = await texposit.resolveProjectUuid(discordUserId, project);
+        await texposit.applyEdits(discordUserId, uuid, [{ file: path, type: 'write', replace: content }]);
         await interaction.reply({ content: `Updated \`${path}\`.`, ephemeral: true });
       } catch (e) {
         await interaction.reply({ content: texpositErrorMessage(e), ephemeral: true });
@@ -862,6 +864,7 @@ client.on('interactionCreate', async interaction => {
 function texpositErrorMessage(e) {
   if (e.status === 0) return 'Not connected to TeXposit yet. Use `/texposit connect` first.';
   if (e.status === 401) return 'Your TeXposit connection was revoked. Use `/texposit connect` to reconnect.';
+  if (e.status === 409) return 'TeXposit hiccupped but your connection is still valid — try that again.';
   if (e.status === 403) return `Not allowed: ${e.message}`;
   if (e.status === 404) return 'Project or file not found — check `/texposit projects`.';
   return `TeXposit error: ${e.message}`;

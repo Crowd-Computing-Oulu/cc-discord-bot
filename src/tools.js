@@ -2181,8 +2181,9 @@ async function toolTexpositProjects(discordUserId) {
 
 async function toolTexpositReadFile({ project_uuid, path: filePath }, discordUserId) {
   try {
-    const content = await texposit.readFile(discordUserId, project_uuid, filePath);
-    return { project_uuid, path: filePath, content };
+    const uuid = await texposit.resolveProjectUuid(discordUserId, project_uuid);
+    const content = await texposit.readFile(discordUserId, uuid, filePath);
+    return { project_uuid: uuid, path: filePath, content };
   } catch (e) {
     return { error: texpositToolErrorMessage(e) };
   }
@@ -2190,11 +2191,12 @@ async function toolTexpositReadFile({ project_uuid, path: filePath }, discordUse
 
 async function toolTexpositEditFile({ project_uuid, path: filePath, edits }, discordUserId) {
   try {
+    const uuid = await texposit.resolveProjectUuid(discordUserId, project_uuid);
     // 'file' is the endpoint's URL, not per-edit — inject it so callers only
     // have to think about one file per tool call, matching the tool schema.
     const fullEdits = (edits || []).map(e => ({ ...e, file: filePath }));
-    const results = await texposit.applyEdits(discordUserId, project_uuid, fullEdits);
-    return { project_uuid, path: filePath, results };
+    const results = await texposit.applyEdits(discordUserId, uuid, fullEdits);
+    return { project_uuid: uuid, path: filePath, results };
   } catch (e) {
     return { error: texpositToolErrorMessage(e) };
   }
@@ -2211,7 +2213,8 @@ async function toolTexpositCreateProject({ name }, discordUserId) {
 
 async function toolTexpositComment({ project_uuid, path: filePath, text, line }, discordUserId) {
   try {
-    const comment = await texposit.createComment(discordUserId, project_uuid, filePath, text, line);
+    const uuid = await texposit.resolveProjectUuid(discordUserId, project_uuid);
+    const comment = await texposit.createComment(discordUserId, uuid, filePath, text, line);
     return { success: true, comment_uuid: comment.uuid };
   } catch (e) {
     return { error: texpositToolErrorMessage(e) };
@@ -2220,7 +2223,8 @@ async function toolTexpositComment({ project_uuid, path: filePath, text, line },
 
 async function toolTexpositShareLink({ project_uuid, mode }, discordUserId) {
   try {
-    const url = await texposit.getShareLink(discordUserId, project_uuid, mode || 'view');
+    const uuid = await texposit.resolveProjectUuid(discordUserId, project_uuid);
+    const url = await texposit.getShareLink(discordUserId, uuid, mode || 'view');
     return { url, mode: mode || 'view' };
   } catch (e) {
     return { error: texpositToolErrorMessage(e) };
@@ -2230,6 +2234,7 @@ async function toolTexpositShareLink({ project_uuid, mode }, discordUserId) {
 function texpositToolErrorMessage(e) {
   if (e.status === 0) return 'This Discord user has not connected a TeXposit account yet — tell them to run /texposit connect.';
   if (e.status === 401) return 'This Discord user\'s TeXposit connection was revoked — tell them to run /texposit connect again.';
+  if (e.status === 409) return 'Transient TeXposit error — the connection is still valid, just retry this call.';
   if (e.status === 403) return `Not allowed: ${e.message}`;
   if (e.status === 404) return 'Project or file not found — call texposit_projects to see what is actually shared.';
   return `TeXposit error: ${e.message}`;

@@ -88,10 +88,23 @@ async function apiRequest(discordUserId, method, path, { params, data } = {}) {
     return res.data;
   } catch (err) {
     if (err.response?.status === 401) {
-      // Token was revoked on TeXposit's side — drop the stale local link so
-      // the next attempt tells the user to reconnect instead of failing silently.
-      await disconnect(discordUserId);
-      throw new TexpositApiError(401, 'revoked');
+      // A 401 here used to be treated as an unconditional revoke and the
+      // local link was dropped on the spot. That was wrong: a 401 on one
+      // endpoint doesn't prove the token is dead — it can also be a
+      // transient hiccup (e.g. right after connecting, before TeXposit has
+      // fully propagated the new token). Confirm against /whoami, which is
+      // the actual source of truth for "is this token still valid", before
+      // throwing away a connection the user still has.
+      const stillValid = await whoamiWithToken(link.token).then(() => true).catch(() => false);
+      if (!stillValid) {
+        await disconnect(discordUserId);
+        throw new TexpositApiError(401, 'revoked');
+      }
+      console.error(
+        `[texposit] transient 401 on ${method} ${path} for discord user ${discordUserId} ` +
+        `(token still valid per /whoami, link kept). Response: ${JSON.stringify(err.response?.data)}`
+      );
+      throw new TexpositApiError(409, 'transient_auth_error');
     }
     const message = err.response?.data?.error || err.message;
     throw new TexpositApiError(err.response?.status || 500, message);
@@ -122,6 +135,29 @@ export async function listProjects(discordUserId) {
   return data.projects;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The model calling these tools sees project names in texposit_projects'
+// output and sometimes passes one of those back instead of copying the UUID
+// verbatim — indistinguishable from a real "wrong ID" case if we just 404.
+// Resolving by name here means that mistake self-corrects instead of
+// reporting shared projects as inaccessible.
+export async function resolveProjectUuid(discordUserId, projectUuidOrName) {
+  if (UUID_RE.test(projectUuidOrName)) return projectUuidOrName;
+
+  const projects = await listProjects(discordUserId);
+  const needle = projectUuidOrName.trim().toLowerCase();
+  const exact = projects.find(p => p.name.toLowerCase() === needle);
+  if (exact) return exact.uuid;
+  const partial = projects.find(p => p.name.toLowerCase().includes(needle));
+  if (partial) return partial.uuid;
+
+  throw new TexpositApiError(
+    404,
+    `No shared project matches "${projectUuidOrName}". Shared projects: ${projects.map(p => p.name).join(', ') || '(none)'}`
+  );
+}
+
 export async function listFiles(discordUserId, projectUuid) {
   const data = await apiRequest(discordUserId, 'GET', `/api/external/projects/${projectUuid}/files`);
   return data.files;
@@ -131,7 +167,25 @@ export async function readFile(discordUserId, projectUuid, path) {
   const data = await apiRequest(discordUserId, 'GET', `/api/external/projects/${projectUuid}/file`, {
     params: { path },
   });
-  return data.content;
+  if (data.content) return data.content;
+
+  // An empty body is indistinguishable from a genuinely empty file, and
+  // trusting it blindly is dangerous: an edit built against "empty" content
+  // can end up overwriting real content instead of failing to match. One
+  // retry after a short delay rules out the transient case (e.g. hitting
+  // TeXposit right as it's still writing the file after a previous edit)
+  // before we accept the file really is empty.
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const retryData = await apiRequest(discordUserId, 'GET', `/api/external/projects/${projectUuid}/file`, {
+    params: { path },
+  });
+  if (!retryData.content) {
+    console.error(
+      `[texposit] "${path}" in project ${projectUuid} read empty twice for discord user ${discordUserId}. ` +
+      `Raw response: ${JSON.stringify(retryData)}`
+    );
+  }
+  return retryData.content;
 }
 
 // edits: array of { file, type: 'replace'|'replace_lines'|'insert'|'delete'|'write',

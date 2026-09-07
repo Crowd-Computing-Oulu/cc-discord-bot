@@ -250,6 +250,43 @@ export async function shouldRespondWithGranite(recentMessages, newMessage, botNa
   return answer.startsWith('YES');
 }
 
+// ─── DM memory extraction ─────────────────────────────────────────────────────
+// Shared by the per-turn real-time path (so facts learned in a DM are visible
+// in server channels the same day) and the nightly compaction backfill.
+
+const DM_MEMORY_EXTRACTION_PROMPT = `You are a memory extraction assistant for a Discord bot named Sissy. Given a private DM exchange, extract only facts about the person that Sissy should remember to be a better friend/colleague — things like their current projects, preferences, problems they mentioned, or goals. Do NOT summarise the conversation itself (it's private). Produce a JSON object with one field:
+"memories": array of { "key": "people/<name>/topic", "value": "concise fact", "category": "people" } — only genuinely useful long-term facts. If nothing memorable, return { "memories": [] }.
+
+Respond with valid JSON only.`;
+
+async function extractAndStoreDMMemories(userId, transcriptText) {
+  if (!userId || !transcriptText) return;
+  try {
+    const res = await axios.post(
+      `${OPENROUTER_BASE}/chat/completions`,
+      {
+        model: MODEL_FAST,
+        messages: [
+          { role: 'system', content: DM_MEMORY_EXTRACTION_PROMPT },
+          { role: 'user', content: `DM userId: ${userId}\n\nTranscript:\n${transcriptText}` },
+        ],
+        max_tokens: 400,
+      },
+      { headers: OR_HEADERS, timeout: 20000 }
+    );
+    const raw = res.data.choices[0].message.content.trim();
+    const jsonStr = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    const result = JSON.parse(jsonStr);
+    if (!Array.isArray(result.memories)) return;
+    for (const mem of result.memories) {
+      if (!mem.key || !mem.value) continue;
+      await UserMemory.upsert({ userId, key: mem.key, value: mem.value, category: mem.category ?? 'other', updatedAt: new Date() });
+    }
+  } catch (err) {
+    console.error(`[dm-memory] extraction failed for ${userId}:`, err.message);
+  }
+}
+
 // ─── Load user memories ───────────────────────────────────────────────────────
 
 async function getUserMemoriesBlock(userId) {
@@ -487,6 +524,11 @@ export async function respondTo({
       // Persist to DB (fire-and-forget — don't block the reply)
       logTurn(channelId, 'user', userContentStr, userId).catch(() => {});
       logTurn(channelId, 'assistant', assistantContent).catch(() => {});
+      // Extract facts from this DM turn immediately so they're available in
+      // server channels right away, instead of waiting for nightly compaction.
+      if (isDM && userId && assistantContent) {
+        extractAndStoreDMMemories(userId, `${username || 'User'}: ${input}\nSissy: ${assistantContent}`).catch(() => {});
+      }
       break;
     }
   }
@@ -530,17 +572,16 @@ async function compactYesterday() {
     });
     if (rows.length === 0) continue;
 
+    // DMs are extracted turn-by-turn in respondTo() (see extractAndStoreDMMemories),
+    // not batched here — nothing left to backfill for them.
+    if (isDM) continue;
+
     // Extract unique userIds who participated (for user-scoped memory extraction)
     const userIds = [...new Set(rows.filter(r => r.userId).map(r => r.userId))];
 
     const transcript = rows.map(r => `${r.role === 'user' ? 'User' : 'Sissy'}: ${r.content}`).join('\n').slice(0, 6000);
 
-    const systemPrompt = isDM
-      ? `You are a memory compaction assistant for a Discord bot named Sissy. Given a private DM conversation, extract only facts about the person that Sissy should remember to be a better friend/colleague — things like their current projects, preferences, problems they mentioned, or goals. Do NOT summarise the conversation itself (it's private). Produce a JSON object with one field:
-"memories": array of { "key": "people/<name>/topic", "value": "concise fact", "category": "people" } — only genuinely useful long-term facts. If nothing memorable, return { "memories": [] }.
-
-Respond with valid JSON only.`
-      : `You are a memory compaction assistant for a Discord bot named Sissy. Given a day's conversation transcript from one channel, produce a JSON object with two fields:
+    const systemPrompt = `You are a memory compaction assistant for a Discord bot named Sissy. Given a day's conversation transcript from one channel, produce a JSON object with two fields:
 1. "summary": 2-4 sentences capturing what was discussed, decided, or notable. Will be used as the channel's long-term memory.
 2. "memories": array of { "key": "category/subcategory/topic", "value": "concise fact", "category": one of people|projects|facts|preferences|events|other } — only facts worth remembering long-term (skip small talk). Use hierarchical keys like "people/daniel/current_work" or "projects/crowdsourcing/status" or "channels/general/recurring_topics". If nothing memorable, omit or return [].
 
@@ -554,7 +595,7 @@ Respond with valid JSON only.`;
           model: MODEL_FAST,
           messages: [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: `${isDM ? 'DM userId' : 'Channel ID'}: ${channelId}\n\nTranscript:\n${transcript}` },
+            { role: 'user', content: `Channel ID: ${channelId}\n\nTranscript:\n${transcript}` },
           ],
           max_tokens: 800,
         },
@@ -568,8 +609,8 @@ Respond with valid JSON only.`;
       continue;
     }
 
-    // Channel summary (public channels only)
-    if (!isDM && compactionResult.summary) {
+    // Channel summary
+    if (compactionResult.summary) {
       const existing = await ChannelSummary.findByPk(channelId);
       const newSummary = existing
         ? `${existing.summary}\n[${yStart.toISOString().slice(0, 10)}] ${compactionResult.summary}`
@@ -590,18 +631,8 @@ Respond with valid JSON only.`;
       }
     }
 
-    // Extract per-user memories
-    if (isDM) {
-      // DM: userId is in the channelId
-      const dmUserId = channelId.replace('dm_', '');
-      if (dmUserId && compactionResult.memories) {
-        for (const mem of compactionResult.memories) {
-          if (!mem.key || !mem.value) continue;
-          await UserMemory.upsert({ userId: dmUserId, key: mem.key, value: mem.value, category: mem.category ?? 'other', updatedAt: new Date() });
-        }
-      }
-    } else if (userIds.length > 0) {
-      // Public channel: extract user-specific facts for each participant
+    // Extract per-user memories for each participant in this public channel
+    if (userIds.length > 0) {
       for (const userId of userIds) {
         try {
           const userTranscript = rows
@@ -646,7 +677,7 @@ Respond with valid JSON only.`;
       }
     }
 
-    console.log(`[compaction] ${channelId}: ${isDM ? 'DM' : 'channel'} processed, ${compactionResult.memories?.length ?? 0} memories written, ${userIds.length} users analyzed`);
+    console.log(`[compaction] ${channelId}: channel processed, ${compactionResult.memories?.length ?? 0} memories written, ${userIds.length} users analyzed`);
   }
 
   // Prune log rows older than retention window
