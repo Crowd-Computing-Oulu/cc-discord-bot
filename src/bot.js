@@ -47,6 +47,12 @@ function extractPaperIdentifier(content) {
 
 const CONVERSATIONAL_DEPTH = 4;
 
+// Matches an explicit "@sissy" text-mention (as opposed to just her name
+// appearing in conversation, e.g. "sissy would love this" — people talk
+// about her by name often without addressing her, so plain name mentions
+// go through the turn-taking judge instead of auto-bypassing it).
+const NAME_MENTION_RE = /@sissy\b/i;
+
 // ─── Discord client ───────────────────────────────────────────────────────────
 await initialize();
 scheduleNightlyCompaction();
@@ -373,7 +379,7 @@ client.on('messageCreate', async message => {
   const guestUser = !isCC(message.member);
 
   const directMention = message.mentions.users.has(CLIENT_ID) ||
-    message.cleanContent.toLowerCase().includes('@sissy');
+    NAME_MENTION_RE.test(message.cleanContent);
 
   const isReplyToBot = message.reference?.messageId
     ? await message.channel.messages.fetch(message.reference.messageId)
@@ -394,7 +400,7 @@ client.on('messageCreate', async message => {
         response = await respondTo({
           channelId: message.channelId,
           userId: message.author.id,
-          input: `A paper was just shared in the conversation: "${paperIdentifier}". Use the lookup_paper tool to fetch its metadata, then reply with: the title, authors, where/when it was published, a 2-3 sentence summary of what it's about, and a sentence on how it might be relevant to what we've been discussing. Be concise and natural — don't list headings, just flow it as a short paragraph.`,
+          input: `A paper was just shared in the conversation: "${paperIdentifier}". Use the lookup_paper tool to fetch its metadata, then reply with just the facts: the title, authors, where/when it was published, and a 2-3 sentence summary of what it's about. Be concise and natural — don't list headings, just flow it as a short paragraph. Don't editorialise, don't speculate about how it relates to the conversation, and don't offer an opinion on it unless someone actually asks for one.`,
           pastMessages: history,
           discordClient: client,
           isGuest: guestUser,
@@ -425,7 +431,10 @@ client.on('messageCreate', async message => {
       const shouldReply = await shouldRespondWithGranite(recentMsgs, message.cleanContent);
       if (!shouldReply) return;
     } catch (e) {
+      // Judge is unreachable — stay silent rather than defaulting to an
+      // unsolicited reply (she should err quiet, not chatty, when uncertain).
       console.error('Granite turn-taking error:', e.message);
+      return;
     }
   }
 
